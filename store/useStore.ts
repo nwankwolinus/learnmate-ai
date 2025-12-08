@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { 
   Message, 
+  ChatSession,
   DifficultyLevel, 
   ExplanationStyle, 
   QuizQuestion, 
@@ -11,8 +12,7 @@ import {
   chatWithLearnMate, 
   generateQuiz, 
   generateStudyPlan,
-  generateVisualAid,
-  generateSpeech
+  generateVisualAid
 } from '../services/geminiService';
 
 interface AppState {
@@ -22,8 +22,16 @@ interface AppState {
   setDifficulty: (level: DifficultyLevel) => void;
   setStyle: (style: ExplanationStyle) => void;
 
+  // --- Chat Sessions ---
+  sessions: ChatSession[];
+  currentSessionId: string | null;
+  createSession: () => void;
+  selectSession: (sessionId: string) => void;
+  deleteSession: (sessionId: string) => void;
+  
   // --- Chat ---
-  messages: Message[];
+  // messages is a computed view of the current session
+  messages: Message[]; 
   isChatLoading: boolean;
   chatError: string | null;
   sendMessage: (content: string, imageFile?: File) => Promise<void>;
@@ -72,6 +80,20 @@ const getSavedResults = (): QuizResult[] => {
   }
 };
 
+const getSavedSessions = (): ChatSession[] => {
+  try {
+    const saved = localStorage.getItem('learnmate_sessions');
+    return saved ? JSON.parse(saved) : [];
+  } catch (e) {
+    console.error("Failed to parse saved sessions", e);
+    return [];
+  }
+};
+
+const saveSessions = (sessions: ChatSession[]) => {
+  localStorage.setItem('learnmate_sessions', JSON.stringify(sessions));
+};
+
 export const useStore = create<AppState>((set, get) => ({
   // Settings
   difficulty: DifficultyLevel.Beginner,
@@ -79,13 +101,78 @@ export const useStore = create<AppState>((set, get) => ({
   setDifficulty: (difficulty) => set({ difficulty }),
   setStyle: (style) => set({ style }),
 
+  // Chat Sessions
+  sessions: getSavedSessions(),
+  currentSessionId: null,
+  
+  createSession: () => {
+    const newSession: ChatSession = {
+      id: Date.now().toString(),
+      title: 'New Chat',
+      messages: [],
+      createdAt: Date.now()
+    };
+    const updatedSessions = [newSession, ...get().sessions];
+    saveSessions(updatedSessions);
+    set({ 
+      sessions: updatedSessions, 
+      currentSessionId: newSession.id,
+      messages: [] 
+    });
+  },
+
+  selectSession: (sessionId) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (session) {
+      set({ 
+        currentSessionId: sessionId, 
+        messages: session.messages 
+      });
+    }
+  },
+
+  deleteSession: (sessionId) => {
+    const { sessions, currentSessionId } = get();
+    const updatedSessions = sessions.filter(s => s.id !== sessionId);
+    saveSessions(updatedSessions);
+    
+    let newCurrentId = currentSessionId;
+    let newMessages = get().messages;
+
+    if (currentSessionId === sessionId) {
+      if (updatedSessions.length > 0) {
+        newCurrentId = updatedSessions[0].id;
+        newMessages = updatedSessions[0].messages;
+      } else {
+        newCurrentId = null;
+        newMessages = [];
+      }
+    }
+    
+    set({ 
+      sessions: updatedSessions, 
+      currentSessionId: newCurrentId, 
+      messages: newMessages 
+    });
+  },
+
   // Chat
   messages: [],
   isChatLoading: false,
   chatError: null,
   sendMessage: async (content, imageFile) => {
-    const { messages, difficulty, style } = get();
+    let { sessions, currentSessionId, difficulty, style } = get();
     
+    // Ensure a session exists
+    if (!currentSessionId) {
+      get().createSession();
+      // Update local vars after state change
+      currentSessionId = get().currentSessionId;
+      sessions = get().sessions;
+    }
+
+    if (!currentSessionId) return; // Should not happen
+
     // Create User Message
     const userMsgId = Date.now().toString();
     const newUserMsg: Message = {
@@ -111,8 +198,25 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
 
+    // Update Session with User Message
+    const sessionIndex = sessions.findIndex(s => s.id === currentSessionId);
+    if (sessionIndex === -1) return;
+
+    const updatedSessions = [...sessions];
+    const currentSession = { ...updatedSessions[sessionIndex] };
+    
+    // Auto-title if it's the first message
+    if (currentSession.messages.length === 0) {
+      currentSession.title = content.slice(0, 30) + (content.length > 30 ? '...' : '');
+    }
+    
+    currentSession.messages = [...currentSession.messages, newUserMsg];
+    updatedSessions[sessionIndex] = currentSession;
+    
+    saveSessions(updatedSessions);
     set({ 
-      messages: [...messages, newUserMsg], 
+      sessions: updatedSessions, 
+      messages: currentSession.messages,
       isChatLoading: true, 
       chatError: null 
     });
@@ -120,10 +224,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const responseText = await chatWithLearnMate(
         content || "Analyze this image",
-        messages, // Pass full history (which does NOT include newUserMsg yet inside chatWithLearnMate's context construction, but here we pass the OLD 'messages' array.
-                  // Ideally, we should pass the new history.
-                  // However, chatWithLearnMate logic appends the current message manually. 
-                  // So passing 'messages' (the state before this update) is correct for that function signature.
+        currentSession.messages.slice(0, -1), // Pass history excluding current (handled by service usually, but here we follow service logic)
         difficulty,
         style,
         imagePart
@@ -136,10 +237,21 @@ export const useStore = create<AppState>((set, get) => ({
         timestamp: Date.now()
       };
 
-      set((state) => ({ 
-        messages: [...state.messages, aiMsg], 
-        isChatLoading: false 
-      }));
+      // Update Session with AI Message
+      const sessionsAfterAi = [...get().sessions]; // re-get latest state
+      const idx = sessionsAfterAi.findIndex(s => s.id === currentSessionId);
+      if (idx !== -1) {
+        const sess = { ...sessionsAfterAi[idx] };
+        sess.messages = [...sess.messages, aiMsg];
+        sessionsAfterAi[idx] = sess;
+        
+        saveSessions(sessionsAfterAi);
+        set({ 
+          sessions: sessionsAfterAi, 
+          messages: sess.messages,
+          isChatLoading: false 
+        });
+      }
     } catch (error: any) {
       set({ 
         isChatLoading: false, 
@@ -149,21 +261,36 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   generateVisualForMessage: async (prompt) => {
+    const { currentSessionId, sessions } = get();
+    if (!currentSessionId) return;
+
     set({ isChatLoading: true });
     try {
       const imageUrl = await generateVisualAid(prompt);
       if (imageUrl) {
-        set((state) => ({
-          messages: [...state.messages, {
+        const visualMsg: Message = {
             id: Date.now().toString(),
             role: 'model',
             content: `Here is a visual aid for: ${prompt}`,
             type: 'image',
             imageUrl: imageUrl,
             timestamp: Date.now()
-          }],
-          isChatLoading: false
-        }));
+        };
+
+        const updatedSessions = [...sessions];
+        const idx = updatedSessions.findIndex(s => s.id === currentSessionId);
+        if (idx !== -1) {
+          const sess = { ...updatedSessions[idx] };
+          sess.messages = [...sess.messages, visualMsg];
+          updatedSessions[idx] = sess;
+          
+          saveSessions(updatedSessions);
+          set({
+            sessions: updatedSessions,
+            messages: sess.messages,
+            isChatLoading: false
+          });
+        }
       } else {
         set({ isChatLoading: false, chatError: "Could not generate image." });
       }
