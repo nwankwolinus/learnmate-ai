@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { 
   Message, 
   ChatSession,
@@ -12,7 +13,8 @@ import {
   chatWithLearnMate, 
   generateQuiz, 
   generateStudyPlan,
-  generateVisualAid
+  generateVisualAid,
+  generateChatTitle
 } from '../services/geminiService';
 
 interface AppState {
@@ -70,283 +72,295 @@ const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
-const getSavedResults = (): QuizResult[] => {
-  try {
-    const saved = localStorage.getItem('learnmate_results');
-    return saved ? JSON.parse(saved) : [];
-  } catch (e) {
-    console.error("Failed to parse saved results", e);
-    return [];
-  }
-};
+export const useStore = create<AppState>()(
+  persist(
+    (set, get) => ({
+      // Settings
+      difficulty: DifficultyLevel.Beginner,
+      style: ExplanationStyle.Standard,
+      setDifficulty: (difficulty) => set({ difficulty }),
+      setStyle: (style) => set({ style }),
 
-const getSavedSessions = (): ChatSession[] => {
-  try {
-    const saved = localStorage.getItem('learnmate_sessions');
-    return saved ? JSON.parse(saved) : [];
-  } catch (e) {
-    console.error("Failed to parse saved sessions", e);
-    return [];
-  }
-};
-
-const saveSessions = (sessions: ChatSession[]) => {
-  localStorage.setItem('learnmate_sessions', JSON.stringify(sessions));
-};
-
-export const useStore = create<AppState>((set, get) => ({
-  // Settings
-  difficulty: DifficultyLevel.Beginner,
-  style: ExplanationStyle.Standard,
-  setDifficulty: (difficulty) => set({ difficulty }),
-  setStyle: (style) => set({ style }),
-
-  // Chat Sessions
-  sessions: getSavedSessions(),
-  currentSessionId: null,
-  
-  createSession: () => {
-    const newSession: ChatSession = {
-      id: Date.now().toString(),
-      title: 'New Chat',
-      messages: [],
-      createdAt: Date.now()
-    };
-    const updatedSessions = [newSession, ...get().sessions];
-    saveSessions(updatedSessions);
-    set({ 
-      sessions: updatedSessions, 
-      currentSessionId: newSession.id,
-      messages: [] 
-    });
-  },
-
-  selectSession: (sessionId) => {
-    const session = get().sessions.find(s => s.id === sessionId);
-    if (session) {
-      set({ 
-        currentSessionId: sessionId, 
-        messages: session.messages 
-      });
-    }
-  },
-
-  deleteSession: (sessionId) => {
-    const { sessions, currentSessionId } = get();
-    const updatedSessions = sessions.filter(s => s.id !== sessionId);
-    saveSessions(updatedSessions);
-    
-    let newCurrentId = currentSessionId;
-    let newMessages = get().messages;
-
-    if (currentSessionId === sessionId) {
-      if (updatedSessions.length > 0) {
-        newCurrentId = updatedSessions[0].id;
-        newMessages = updatedSessions[0].messages;
-      } else {
-        newCurrentId = null;
-        newMessages = [];
-      }
-    }
-    
-    set({ 
-      sessions: updatedSessions, 
-      currentSessionId: newCurrentId, 
-      messages: newMessages 
-    });
-  },
-
-  // Chat
-  messages: [],
-  isChatLoading: false,
-  chatError: null,
-  sendMessage: async (content, imageFile) => {
-    let { sessions, currentSessionId, difficulty, style } = get();
-    
-    // Ensure a session exists
-    if (!currentSessionId) {
-      get().createSession();
-      // Update local vars after state change
-      currentSessionId = get().currentSessionId;
-      sessions = get().sessions;
-    }
-
-    if (!currentSessionId) return; // Should not happen
-
-    // Create User Message
-    const userMsgId = Date.now().toString();
-    const newUserMsg: Message = {
-      id: userMsgId,
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-      imageUrl: imageFile ? URL.createObjectURL(imageFile) : undefined,
-    };
-
-    let imagePart = undefined;
-    if (imageFile) {
-      try {
-        const base64 = await fileToBase64(imageFile);
-        newUserMsg.imageData = {
-          mimeType: imageFile.type,
-          data: base64
+      // Chat Sessions
+      sessions: [],
+      currentSessionId: null,
+      
+      createSession: () => {
+        const newSession: ChatSession = {
+          id: Date.now().toString(),
+          title: 'New Chat',
+          messages: [],
+          createdAt: Date.now()
         };
-        imagePart = { inlineData: { data: base64, mimeType: imageFile.type } };
-      } catch (e) {
-        set({ chatError: "Failed to process image." });
-        return;
-      }
-    }
+        set((state) => ({ 
+          sessions: [newSession, ...state.sessions], 
+          currentSessionId: newSession.id,
+          messages: [] 
+        }));
+      },
 
-    // Update Session with User Message
-    const sessionIndex = sessions.findIndex(s => s.id === currentSessionId);
-    if (sessionIndex === -1) return;
-
-    const updatedSessions = [...sessions];
-    const currentSession = { ...updatedSessions[sessionIndex] };
-    
-    // Auto-title if it's the first message
-    if (currentSession.messages.length === 0) {
-      currentSession.title = content.slice(0, 30) + (content.length > 30 ? '...' : '');
-    }
-    
-    currentSession.messages = [...currentSession.messages, newUserMsg];
-    updatedSessions[sessionIndex] = currentSession;
-    
-    saveSessions(updatedSessions);
-    set({ 
-      sessions: updatedSessions, 
-      messages: currentSession.messages,
-      isChatLoading: true, 
-      chatError: null 
-    });
-
-    try {
-      const responseText = await chatWithLearnMate(
-        content || "Analyze this image",
-        currentSession.messages.slice(0, -1), // Pass history excluding current (handled by service usually, but here we follow service logic)
-        difficulty,
-        style,
-        imagePart
-      );
-
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        content: responseText,
-        timestamp: Date.now()
-      };
-
-      // Update Session with AI Message
-      const sessionsAfterAi = [...get().sessions]; // re-get latest state
-      const idx = sessionsAfterAi.findIndex(s => s.id === currentSessionId);
-      if (idx !== -1) {
-        const sess = { ...sessionsAfterAi[idx] };
-        sess.messages = [...sess.messages, aiMsg];
-        sessionsAfterAi[idx] = sess;
-        
-        saveSessions(sessionsAfterAi);
-        set({ 
-          sessions: sessionsAfterAi, 
-          messages: sess.messages,
-          isChatLoading: false 
-        });
-      }
-    } catch (error: any) {
-      set({ 
-        isChatLoading: false, 
-        chatError: error.message || "Something went wrong." 
-      });
-    }
-  },
-
-  generateVisualForMessage: async (prompt) => {
-    const { currentSessionId, sessions } = get();
-    if (!currentSessionId) return;
-
-    set({ isChatLoading: true });
-    try {
-      const imageUrl = await generateVisualAid(prompt);
-      if (imageUrl) {
-        const visualMsg: Message = {
-            id: Date.now().toString(),
-            role: 'model',
-            content: `Here is a visual aid for: ${prompt}`,
-            type: 'image',
-            imageUrl: imageUrl,
-            timestamp: Date.now()
-        };
-
-        const updatedSessions = [...sessions];
-        const idx = updatedSessions.findIndex(s => s.id === currentSessionId);
-        if (idx !== -1) {
-          const sess = { ...updatedSessions[idx] };
-          sess.messages = [...sess.messages, visualMsg];
-          updatedSessions[idx] = sess;
-          
-          saveSessions(updatedSessions);
-          set({
-            sessions: updatedSessions,
-            messages: sess.messages,
-            isChatLoading: false
+      selectSession: (sessionId) => {
+        const session = get().sessions.find(s => s.id === sessionId);
+        if (session) {
+          set({ 
+            currentSessionId: sessionId, 
+            messages: session.messages 
           });
         }
-      } else {
-        set({ isChatLoading: false, chatError: "Could not generate image." });
+      },
+
+      deleteSession: (sessionId) => {
+        const { sessions, currentSessionId } = get();
+        const updatedSessions = sessions.filter(s => s.id !== sessionId);
+        
+        let newCurrentId = currentSessionId;
+        let newMessages = get().messages;
+
+        if (currentSessionId === sessionId) {
+          if (updatedSessions.length > 0) {
+            newCurrentId = updatedSessions[0].id;
+            newMessages = updatedSessions[0].messages;
+          } else {
+            newCurrentId = null;
+            newMessages = [];
+          }
+        }
+        
+        set({ 
+          sessions: updatedSessions, 
+          currentSessionId: newCurrentId, 
+          messages: newMessages 
+        });
+      },
+
+      // Chat
+      messages: [],
+      isChatLoading: false,
+      chatError: null,
+      sendMessage: async (content, imageFile) => {
+        let { sessions, currentSessionId, difficulty, style } = get();
+        
+        // Ensure a session exists
+        if (!currentSessionId) {
+          get().createSession();
+          // Update local vars after state change
+          currentSessionId = get().currentSessionId;
+          sessions = get().sessions;
+        }
+
+        if (!currentSessionId) return;
+
+        // Create User Message
+        const userMsgId = Date.now().toString();
+        const newUserMsg: Message = {
+          id: userMsgId,
+          role: 'user',
+          content,
+          timestamp: Date.now(),
+          imageUrl: imageFile ? URL.createObjectURL(imageFile) : undefined,
+        };
+
+        let imagePart = undefined;
+        if (imageFile) {
+          try {
+            const base64 = await fileToBase64(imageFile);
+            newUserMsg.imageData = {
+              mimeType: imageFile.type,
+              data: base64
+            };
+            imagePart = { inlineData: { data: base64, mimeType: imageFile.type } };
+          } catch (e) {
+            set({ chatError: "Failed to process image." });
+            return;
+          }
+        }
+
+        // Update Session with User Message
+        const sessionIndex = sessions.findIndex(s => s.id === currentSessionId);
+        if (sessionIndex === -1) return;
+
+        const updatedSessions = [...sessions];
+        const currentSession = { ...updatedSessions[sessionIndex] };
+        
+        const isFirstMessage = currentSession.messages.length === 0;
+        
+        // Auto-title placeholder
+        if (isFirstMessage) {
+          currentSession.title = content.slice(0, 30) + (content.length > 30 ? '...' : '');
+        }
+        
+        currentSession.messages = [...currentSession.messages, newUserMsg];
+        updatedSessions[sessionIndex] = currentSession;
+        
+        set({ 
+          sessions: updatedSessions, 
+          messages: currentSession.messages,
+          isChatLoading: true, 
+          chatError: null 
+        });
+
+        // Generate Smart Title asynchronously if first message
+        if (isFirstMessage) {
+          generateChatTitle(content).then((title) => {
+            set((state) => {
+              const sList = [...state.sessions];
+              const sIdx = sList.findIndex(s => s.id === currentSessionId);
+              if (sIdx !== -1) {
+                sList[sIdx] = { ...sList[sIdx], title };
+                return { sessions: sList };
+              }
+              return {};
+            });
+          });
+        }
+
+        try {
+          const responseText = await chatWithLearnMate(
+            content || "Analyze this image",
+            currentSession.messages.slice(0, -1),
+            difficulty,
+            style,
+            imagePart
+          );
+
+          const aiMsg: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'model',
+            content: responseText,
+            timestamp: Date.now()
+          };
+
+          // Update Session with AI Message
+          set((state) => {
+            const sessionsAfterAi = [...state.sessions]; 
+            const idx = sessionsAfterAi.findIndex(s => s.id === currentSessionId);
+            if (idx !== -1) {
+              const sess = { ...sessionsAfterAi[idx] };
+              sess.messages = [...sess.messages, aiMsg];
+              sessionsAfterAi[idx] = sess;
+              
+              return { 
+                sessions: sessionsAfterAi, 
+                messages: sess.messages,
+                isChatLoading: false 
+              };
+            }
+            return { isChatLoading: false };
+          });
+        } catch (error: any) {
+          set({ 
+            isChatLoading: false, 
+            chatError: error.message || "Something went wrong." 
+          });
+        }
+      },
+
+      generateVisualForMessage: async (prompt) => {
+        const { currentSessionId } = get();
+        if (!currentSessionId) return;
+
+        set({ isChatLoading: true });
+        try {
+          const imageUrl = await generateVisualAid(prompt);
+          if (imageUrl) {
+            const visualMsg: Message = {
+                id: Date.now().toString(),
+                role: 'model',
+                content: `Here is a visual aid for: ${prompt}`,
+                type: 'image',
+                imageUrl: imageUrl,
+                timestamp: Date.now()
+            };
+
+            set((state) => {
+                const updatedSessions = [...state.sessions];
+                const idx = updatedSessions.findIndex(s => s.id === currentSessionId);
+                if (idx !== -1) {
+                  const sess = { ...updatedSessions[idx] };
+                  sess.messages = [...sess.messages, visualMsg];
+                  updatedSessions[idx] = sess;
+                  
+                  return {
+                    sessions: updatedSessions,
+                    messages: sess.messages,
+                    isChatLoading: false
+                  };
+                }
+                return { isChatLoading: false };
+            });
+          } else {
+            set({ isChatLoading: false, chatError: "Could not generate image." });
+          }
+        } catch (e) {
+          set({ isChatLoading: false, chatError: "Failed to generate visual aid." });
+        }
+      },
+      
+      clearChatError: () => set({ chatError: null }),
+
+      // Quiz
+      quizTopic: '',
+      setQuizTopic: (quizTopic) => set({ quizTopic }),
+      quizQuestions: [],
+      quizResults: [],
+      isQuizGenerating: false,
+      quizError: null,
+      
+      generateQuizAction: async (topic) => {
+        set({ isQuizGenerating: true, quizError: null, quizQuestions: [] });
+        try {
+          const questions = await generateQuiz(topic);
+          set({ quizQuestions: questions, isQuizGenerating: false });
+        } catch (error: any) {
+          set({ 
+            isQuizGenerating: false, 
+            quizError: error.message || "Failed to generate quiz." 
+          });
+        }
+      },
+
+      saveQuizResult: (result) => {
+        set((state) => ({ quizResults: [...state.quizResults, result] }));
+      },
+
+      clearQuiz: () => set({ quizQuestions: [], quizTopic: '', quizError: null }),
+
+      // Plan
+      currentPlan: null,
+      isPlanLoading: false,
+      planError: null,
+      createPlan: async (topic, duration) => {
+        set({ isPlanLoading: true, planError: null });
+        try {
+          const plan = await generateStudyPlan(topic, duration);
+          set({ currentPlan: plan, isPlanLoading: false });
+        } catch (error: any) {
+          set({ 
+            isPlanLoading: false, 
+            planError: error.message || "Failed to create plan." 
+          });
+        }
+      },
+      resetPlan: () => set({ currentPlan: null, planError: null }),
+    }),
+    {
+      name: 'learnmate-storage',
+      partialize: (state) => ({
+        sessions: state.sessions,
+        currentSessionId: state.currentSessionId,
+        quizResults: state.quizResults,
+        difficulty: state.difficulty,
+        style: state.style
+      }),
+      onRehydrateStorage: () => (state) => {
+        // Hydrate the messages view from the current session upon load
+        if (state && state.currentSessionId && state.sessions) {
+           const session = state.sessions.find(s => s.id === state.currentSessionId);
+           if (session) {
+             state.messages = session.messages;
+           }
+        }
       }
-    } catch (e) {
-      set({ isChatLoading: false, chatError: "Failed to generate visual aid." });
     }
-  },
-  
-  clearChatError: () => set({ chatError: null }),
-
-  // Quiz
-  quizTopic: '',
-  setQuizTopic: (quizTopic) => set({ quizTopic }),
-  quizQuestions: [],
-  quizResults: getSavedResults(),
-  isQuizGenerating: false,
-  quizError: null,
-  
-  generateQuizAction: async (topic) => {
-    set({ isQuizGenerating: true, quizError: null, quizQuestions: [] });
-    try {
-      const questions = await generateQuiz(topic);
-      set({ quizQuestions: questions, isQuizGenerating: false });
-    } catch (error: any) {
-      set({ 
-        isQuizGenerating: false, 
-        quizError: error.message || "Failed to generate quiz." 
-      });
-    }
-  },
-
-  saveQuizResult: (result) => {
-    set((state) => {
-      const newResults = [...state.quizResults, result];
-      localStorage.setItem('learnmate_results', JSON.stringify(newResults));
-      return { quizResults: newResults };
-    });
-  },
-
-  clearQuiz: () => set({ quizQuestions: [], quizTopic: '', quizError: null }),
-
-  // Plan
-  currentPlan: null,
-  isPlanLoading: false,
-  planError: null,
-  createPlan: async (topic, duration) => {
-    set({ isPlanLoading: true, planError: null });
-    try {
-      const plan = await generateStudyPlan(topic, duration);
-      set({ currentPlan: plan, isPlanLoading: false });
-    } catch (error: any) {
-      set({ 
-        isPlanLoading: false, 
-        planError: error.message || "Failed to create plan." 
-      });
-    }
-  },
-  resetPlan: () => set({ currentPlan: null, planError: null }),
-}));
+  )
+);

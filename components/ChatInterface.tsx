@@ -1,12 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Send, Image as ImageIcon, Volume2, Loader2, Sparkles, X, AlertCircle, 
-  MessageSquare, Plus, Trash2, Menu, ChevronLeft 
+  MessageSquare, Plus, Trash2, Menu, ChevronLeft, Search 
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { generateSpeech, decodeAudioData } from '../services/geminiService';
 import ReactMarkdown from 'react-markdown';
-import { DifficultyLevel, ExplanationStyle } from '../types';
+import { DifficultyLevel, ExplanationStyle, ChatSession } from '../types';
 
 export const ChatInterface: React.FC = () => {
   const { 
@@ -31,6 +31,7 @@ export const ChatInterface: React.FC = () => {
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -97,84 +98,135 @@ export const ChatInterface: React.FC = () => {
     }
   };
 
-  const formatDate = (timestamp: number) => {
-    const date = new Date(timestamp);
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sessions;
+    const lowerQuery = searchQuery.toLowerCase();
+    return sessions.filter(s => 
+      (s.title || '').toLowerCase().includes(lowerQuery) ||
+      s.messages.some(m => m.content.toLowerCase().includes(lowerQuery))
+    );
+  }, [sessions, searchQuery]);
+
+  const groupedSessions = useMemo(() => {
+    const groups: { [key: string]: ChatSession[] } = {
+      'Today': [],
+      'Yesterday': [],
+      'Previous 7 Days': [],
+      'Older': []
+    };
+    
     const now = new Date();
-    const isToday = date.toDateString() === now.toDateString();
-    return isToday ? date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : date.toLocaleDateString();
-  };
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const yesterdayStart = todayStart - 86400000;
+    const weekStart = todayStart - 7 * 86400000;
+
+    filteredSessions.forEach(session => {
+       const date = session.createdAt;
+       if (date >= todayStart) groups['Today'].push(session);
+       else if (date >= yesterdayStart) groups['Yesterday'].push(session);
+       else if (date >= weekStart) groups['Previous 7 Days'].push(session);
+       else groups['Older'].push(session);
+    });
+    
+    return groups;
+  }, [filteredSessions]);
 
   return (
     <div className="flex h-[calc(100vh-100px)] max-w-6xl mx-auto bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
       
       {/* Sidebar - Desktop: Always visible, Mobile: Toggleable */}
       <div className={`
-        absolute inset-y-0 left-0 z-20 w-64 bg-slate-50 border-r border-slate-200 transform transition-transform duration-200 ease-in-out
+        absolute inset-y-0 left-0 z-20 w-64 bg-slate-50 border-r border-slate-200 transform transition-transform duration-200 ease-in-out flex flex-col
         md:relative md:translate-x-0
         ${showSidebar ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
       `}>
-        <div className="flex flex-col h-full">
-          <div className="p-4 border-b border-slate-200 flex justify-between items-center">
-            <h2 className="font-bold text-slate-700 flex items-center gap-2">
-              <MessageSquare className="w-5 h-5 text-indigo-600" /> History
-            </h2>
-            <button 
-              onClick={() => setShowSidebar(false)} 
-              className="md:hidden text-slate-400 hover:text-slate-600"
-            >
-              <ChevronLeft className="w-5 h-5" />
-            </button>
-          </div>
+        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white">
+          <h2 className="font-bold text-slate-700 flex items-center gap-2">
+            <MessageSquare className="w-5 h-5 text-indigo-600" /> History
+          </h2>
+          <button 
+            onClick={() => setShowSidebar(false)} 
+            className="md:hidden text-slate-400 hover:text-slate-600"
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+        </div>
 
-          <div className="p-3">
-            <button 
-              onClick={() => { createSession(); setShowSidebar(false); }}
-              className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white py-2.5 rounded-xl font-medium hover:bg-indigo-700 transition-all shadow-sm"
-            >
-              <Plus className="w-4 h-4" /> New Chat
-            </button>
+        <div className="p-3 space-y-3">
+          <button 
+            onClick={() => { createSession(); setShowSidebar(false); setSearchQuery(''); }}
+            className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white py-2.5 rounded-xl font-medium hover:bg-indigo-700 transition-all shadow-sm"
+          >
+            <Plus className="w-4 h-4" /> New Chat
+          </button>
+          
+          <div className="relative">
+            <input 
+              type="text"
+              placeholder="Search chats..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            />
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
           </div>
+        </div>
 
-          <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1">
-            {sessions.map((session) => (
-              <div 
-                key={session.id}
-                onClick={() => { selectSession(session.id); setShowSidebar(false); }}
-                className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-colors border ${
-                  currentSessionId === session.id 
-                    ? 'bg-white border-indigo-200 shadow-sm' 
-                    : 'border-transparent hover:bg-slate-200/50 hover:border-slate-200'
-                }`}
-              >
-                <div className="flex-1 min-w-0 pr-2">
-                  <p className={`text-sm font-medium truncate ${currentSessionId === session.id ? 'text-indigo-900' : 'text-slate-700'}`}>
-                    {session.title}
-                  </p>
-                  <p className="text-xs text-slate-400 mt-0.5">{formatDate(session.createdAt)}</p>
+        <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-4 custom-scrollbar">
+          {Object.entries(groupedSessions).map(([label, sessions]) => {
+            const groupSessions = sessions as ChatSession[];
+            return (
+              groupSessions.length > 0 && (
+                <div key={label}>
+                   <h3 className="px-3 text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 mt-2">{label}</h3>
+                   <div className="space-y-1">
+                     {groupSessions.map((session) => (
+                      <div 
+                        key={session.id}
+                        onClick={() => { selectSession(session.id); setShowSidebar(false); }}
+                        className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border ${
+                          currentSessionId === session.id 
+                            ? 'bg-white border-indigo-200 shadow-sm ring-1 ring-indigo-50' 
+                            : 'border-transparent hover:bg-slate-200/50 hover:border-slate-200'
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0 pr-2">
+                          <p className={`text-sm font-medium truncate ${currentSessionId === session.id ? 'text-indigo-900' : 'text-slate-700'}`}>
+                            {session.title || "New Chat"}
+                          </p>
+                        </div>
+                        <button 
+                          onClick={(e) => handleDeleteSession(e, session.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                          title="Delete Chat"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                   </div>
                 </div>
-                <button 
-                  onClick={(e) => handleDeleteSession(e, session.id)}
-                  className="opacity-0 group-hover:opacity-100 p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                  title="Delete Chat"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
-            {sessions.length === 0 && (
-              <div className="text-center text-slate-400 text-sm py-8">
-                No history yet.
-              </div>
-            )}
-          </div>
+              )
+            );
+          })}
+          {sessions.length === 0 && (
+            <div className="text-center text-slate-400 text-sm py-8 italic">
+              No history yet.
+            </div>
+          )}
+          {sessions.length > 0 && filteredSessions.length === 0 && (
+             <div className="text-center text-slate-400 text-sm py-8 italic">
+               No matches found.
+             </div>
+          )}
         </div>
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0 bg-white">
+      <div className="flex-1 flex flex-col min-w-0 bg-white relative">
         
         {/* Header */}
-        <div className="bg-white p-4 border-b border-slate-200 flex flex-wrap gap-4 items-center justify-between z-10">
+        <div className="bg-white p-4 border-b border-slate-200 flex flex-wrap gap-4 items-center justify-between z-10 shadow-sm">
           <div className="flex items-center gap-3">
             <button 
               onClick={() => setShowSidebar(true)} 

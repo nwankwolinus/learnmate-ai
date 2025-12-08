@@ -100,6 +100,22 @@ export const chatWithLearnMate = async (
   }
 };
 
+export const generateChatTitle = async (message: string): Promise<string> => {
+  validateApiKey();
+  const modelId = "gemini-2.5-flash";
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: `Generate a short, descriptive title (max 5 words) for a conversation starting with this message: "${message}". Do not use quotes.`,
+    });
+    return response.text?.trim() || "New Chat";
+  } catch (error) {
+    console.error("Title Gen Error:", error);
+    return "New Chat";
+  }
+};
+
 // --- Smart Quiz Generator ---
 
 export const generateQuiz = async (topic: string, count: number = 5): Promise<QuizQuestion[]> => {
