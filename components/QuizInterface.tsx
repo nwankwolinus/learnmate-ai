@@ -1,29 +1,32 @@
 import React, { useState } from 'react';
-import { QuizQuestion, QuizResult } from '../types';
-import { generateQuiz } from '../services/geminiService';
-import { CheckCircle, XCircle, Brain, Loader2, ArrowRight } from 'lucide-react';
+import { useStore } from '../store/useStore';
+import { CheckCircle, XCircle, Brain, Loader2, ArrowRight, AlertTriangle } from 'lucide-react';
 
-export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => void }> = ({ onSaveResult }) => {
-  const [topic, setTopic] = useState('');
-  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
+export const QuizInterface: React.FC = () => {
+  const { 
+    quizTopic, 
+    setQuizTopic, 
+    quizQuestions, 
+    isQuizGenerating, 
+    quizError,
+    generateQuizAction,
+    saveQuizResult,
+    clearQuiz
+  } = useStore();
+
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [score, setScore] = useState(0);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [quizComplete, setQuizComplete] = useState(false);
 
-  const handleGenerate = async () => {
-    if (!topic.trim()) return;
-    setIsGenerating(true);
-    setQuizComplete(false);
-    setCurrentQuestionIndex(0);
-    setScore(0);
-    setQuestions([]);
-    
-    const quiz = await generateQuiz(topic);
-    setQuestions(quiz);
-    setIsGenerating(false);
+  const handleGenerate = () => {
+    if (quizTopic.trim()) {
+      setQuizComplete(false);
+      setCurrentQuestionIndex(0);
+      setScore(0);
+      generateQuizAction(quizTopic);
+    }
   };
 
   const handleAnswer = (index: number) => {
@@ -31,7 +34,7 @@ export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => voi
     setSelectedAnswer(index);
     setShowFeedback(true);
     
-    if (index === questions[currentQuestionIndex].correctAnswer) {
+    if (index === quizQuestions[currentQuestionIndex].correctAnswer) {
       setScore(prev => prev + 1);
     }
   };
@@ -40,29 +43,45 @@ export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => voi
     setSelectedAnswer(null);
     setShowFeedback(false);
     
-    if (currentQuestionIndex < questions.length - 1) {
+    if (currentQuestionIndex < quizQuestions.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
     } else {
       setQuizComplete(true);
-      onSaveResult({
-        score: score + (selectedAnswer === questions[currentQuestionIndex].correctAnswer ? 0 : 0), // Already added above
-        total: questions.length,
+      saveQuizResult({
+        score: score + (selectedAnswer === quizQuestions[currentQuestionIndex].correctAnswer ? 0 : 0),
+        total: quizQuestions.length,
         date: new Date().toISOString(),
-        topic
+        topic: quizTopic
       });
     }
   };
 
-  if (isGenerating) {
+  const resetLocal = () => {
+    clearQuiz();
+    setScore(0);
+    setQuizComplete(false);
+  };
+
+  if (isQuizGenerating) {
     return (
       <div className="flex flex-col items-center justify-center h-96 text-slate-500">
         <Loader2 className="w-12 h-12 mb-4 animate-spin text-indigo-600" />
-        <p className="text-lg">Generating a smart quiz about "{topic}"...</p>
+        <p className="text-lg">Generating a smart quiz about "{quizTopic}"...</p>
       </div>
     );
   }
 
-  if (questions.length === 0 && !quizComplete) {
+  if (quizError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-96 text-red-500">
+        <AlertTriangle className="w-12 h-12 mb-4" />
+        <p className="text-lg font-semibold">{quizError}</p>
+        <button onClick={resetLocal} className="mt-4 text-indigo-600 hover:underline">Try Again</button>
+      </div>
+    );
+  }
+
+  if (quizQuestions.length === 0 && !quizComplete) {
     return (
       <div className="max-w-md mx-auto mt-10 p-6 bg-white rounded-2xl shadow-lg text-center">
         <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -73,14 +92,14 @@ export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => voi
         
         <input 
           type="text"
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          placeholder="e.g. Photosynthesis, World War II, React Hooks"
+          value={quizTopic}
+          onChange={(e) => setQuizTopic(e.target.value)}
+          placeholder="e.g. Photosynthesis, World War II"
           className="w-full mb-4 px-4 py-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
         />
         <button 
           onClick={handleGenerate}
-          disabled={!topic.trim()}
+          disabled={!quizTopic.trim()}
           className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-50"
         >
           Generate Quiz
@@ -90,14 +109,14 @@ export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => voi
   }
 
   if (quizComplete) {
-    const percentage = Math.round((score / questions.length) * 100);
+    const percentage = Math.round((score / quizQuestions.length) * 100);
     return (
       <div className="max-w-md mx-auto mt-10 p-8 bg-white rounded-2xl shadow-lg text-center">
         <h2 className="text-3xl font-bold text-slate-800 mb-2">Quiz Complete!</h2>
         <div className="text-6xl font-black text-indigo-600 my-6">{percentage}%</div>
-        <p className="text-slate-600 mb-8">You got {score} out of {questions.length} questions correct.</p>
+        <p className="text-slate-600 mb-8">You got {score} out of {quizQuestions.length} questions correct.</p>
         <button 
-          onClick={() => { setQuestions([]); setTopic(''); }}
+          onClick={resetLocal}
           className="bg-slate-900 text-white px-8 py-3 rounded-xl font-semibold hover:bg-slate-800"
         >
           Take Another Quiz
@@ -106,7 +125,7 @@ export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => voi
     );
   }
 
-  const currentQ = questions[currentQuestionIndex];
+  const currentQ = quizQuestions[currentQuestionIndex];
 
   return (
     <div className="max-w-2xl mx-auto mt-6">
@@ -115,16 +134,16 @@ export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => voi
         <div className="h-2 bg-slate-100">
            <div 
              className="h-full bg-indigo-500 transition-all duration-300" 
-             style={{ width: `${((currentQuestionIndex) / questions.length) * 100}%` }}
+             style={{ width: `${((currentQuestionIndex) / quizQuestions.length) * 100}%` }}
            />
         </div>
 
         <div className="p-8">
            <div className="flex justify-between items-center mb-6">
              <span className="text-sm font-semibold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
-               Question {currentQuestionIndex + 1} / {questions.length}
+               Question {currentQuestionIndex + 1} / {quizQuestions.length}
              </span>
-             <span className="text-slate-400 text-sm">Topic: {topic}</span>
+             <span className="text-slate-400 text-sm">Topic: {quizTopic}</span>
            </div>
 
            <h3 className="text-xl font-bold text-slate-800 mb-6 leading-relaxed">
@@ -172,7 +191,7 @@ export const QuizInterface: React.FC<{ onSaveResult: (result: QuizResult) => voi
                    onClick={handleNext}
                    className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
                  >
-                   {currentQuestionIndex === questions.length - 1 ? "Finish" : "Next Question"} <ArrowRight className="w-4 h-4" />
+                   {currentQuestionIndex === quizQuestions.length - 1 ? "Finish" : "Next Question"} <ArrowRight className="w-4 h-4" />
                  </button>
                </div>
              </div>

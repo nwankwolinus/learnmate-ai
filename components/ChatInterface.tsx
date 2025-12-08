@@ -1,31 +1,40 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Image as ImageIcon, Volume2, Loader2, Sparkles, X } from 'lucide-react';
-import { Message, DifficultyLevel, ExplanationStyle } from '../types';
-import { chatWithLearnMate, generateVisualAid, generateSpeech, decodeAudioData } from '../services/geminiService';
+import { Send, Image as ImageIcon, Volume2, Loader2, Sparkles, X, AlertCircle } from 'lucide-react';
+import { useStore } from '../store/useStore';
+import { generateSpeech, decodeAudioData } from '../services/geminiService';
 import ReactMarkdown from 'react-markdown';
+import { DifficultyLevel, ExplanationStyle } from '../types';
 
 export const ChatInterface: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const { 
+    messages, 
+    isChatLoading, 
+    chatError, 
+    sendMessage, 
+    generateVisualForMessage,
+    clearChatError,
+    difficulty,
+    setDifficulty,
+    style,
+    setStyle
+  } = useStore();
+
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [difficulty, setDifficulty] = useState<DifficultyLevel>(DifficultyLevel.Beginner);
-  const [style, setStyle] = useState<ExplanationStyle>(ExplanationStyle.Standard);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  
   const chatEndRef = useRef<HTMLDivElement>(null);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isChatLoading]);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setSelectedImage(file);
-      const url = URL.createObjectURL(file);
-      setPreviewUrl(url);
+      setPreviewUrl(URL.createObjectURL(file));
     }
   };
 
@@ -35,126 +44,32 @@ export const ChatInterface: React.FC = () => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        // Remove data URL prefix
-        const base64 = result.split(',')[1];
-        resolve(base64);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+  const handleSend = async () => {
+    if ((!input.trim() && !selectedImage) || isChatLoading) return;
+    const msg = input;
+    const img = selectedImage || undefined;
+    
+    setInput('');
+    clearImage();
+    
+    await sendMessage(msg, img);
   };
 
-  const playAudio = async (base64Audio: string) => {
+  const handleAudio = async (text: string) => {
     try {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        const audioCtx = new AudioContextClass({ sampleRate: 24000 });
-        const buffer = await decodeAudioData(base64Audio, audioCtx);
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioContextClass({ sampleRate: 24000 });
+      const base64 = await generateSpeech(text);
+      if (base64) {
+        const buffer = await decodeAudioData(base64, audioCtx);
         const source = audioCtx.createBufferSource();
         source.buffer = buffer;
         source.connect(audioCtx.destination);
         source.start();
-    } catch (e) {
-        console.error("Audio playback failed", e);
-    }
-  };
-
-  const handleSend = async () => {
-    if ((!input.trim() && !selectedImage) || isLoading) return;
-
-    const userMsgId = Date.now().toString();
-    const newUserMsg: Message = {
-      id: userMsgId,
-      role: 'user',
-      content: input,
-      imageUrl: previewUrl || undefined,
-      timestamp: Date.now()
-    };
-
-    setMessages(prev => [...prev, newUserMsg]);
-    setInput('');
-    setIsLoading(true);
-
-    try {
-      let imagePart = undefined;
-      if (selectedImage) {
-        const base64Data = await fileToBase64(selectedImage);
-        imagePart = {
-          inlineData: {
-            data: base64Data,
-            mimeType: selectedImage.type
-          }
-        };
-      }
-
-      // Clear image selection after sending
-      clearImage();
-
-      const responseText = await chatWithLearnMate(
-        newUserMsg.content || "Explain this image", 
-        [], // History logic simplified
-        difficulty, 
-        style,
-        imagePart
-      );
-
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        content: responseText,
-        timestamp: Date.now()
-      };
-
-      setMessages(prev => [...prev, aiMsg]);
-    } catch (error) {
-      console.error(error);
-      const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        content: "Sorry, I encountered an error processing your request.",
-        timestamp: Date.now()
-      };
-      setMessages(prev => [...prev, errorMsg]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGenerateVisual = async (prompt: string) => {
-    setIsLoading(true);
-    try {
-      const imageUrl = await generateVisualAid(prompt);
-      if (imageUrl) {
-         setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            role: 'model',
-            content: `Here is a visual aid for: ${prompt}`,
-            type: 'image',
-            imageUrl: imageUrl,
-            timestamp: Date.now()
-         }]);
       }
     } catch (e) {
-      console.error(e);
-    } finally {
-      setIsLoading(false);
+      console.error("Audio playback error", e);
     }
-  };
-
-  const handleGenerateAudio = async (text: string) => {
-      // Don't block UI too much for audio
-      try {
-          const audioBase64 = await generateSpeech(text);
-          if (audioBase64) {
-              await playAudio(audioBase64);
-          }
-      } catch (e) {
-          console.error(e);
-      }
   };
 
   return (
@@ -184,6 +99,17 @@ export const ChatInterface: React.FC = () => {
         </div>
       </div>
 
+      {/* Error Banner */}
+      {chatError && (
+        <div className="bg-red-50 p-3 flex justify-between items-center text-red-700 text-sm border-b border-red-100">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" />
+            {chatError}
+          </div>
+          <button onClick={clearChatError} className="hover:text-red-900"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+
       {/* Chat Area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6 bg-slate-50/50">
         {messages.length === 0 && (
@@ -200,7 +126,7 @@ export const ChatInterface: React.FC = () => {
                 : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
             }`}>
               {msg.imageUrl && (
-                <img src={msg.imageUrl} alt="Uploaded or Generated" className="max-w-full rounded-lg mb-3" />
+                <img src={msg.imageUrl} alt="Content" className="max-w-full rounded-lg mb-3" />
               )}
               
               {msg.type !== 'image' && (
@@ -212,14 +138,14 @@ export const ChatInterface: React.FC = () => {
               {msg.role === 'model' && (
                 <div className="mt-3 flex gap-2 pt-2 border-t border-slate-100">
                    <button 
-                     onClick={() => handleGenerateAudio(msg.content)}
+                     onClick={() => handleAudio(msg.content)}
                      className="text-xs flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
                      title="Read Aloud"
                    >
                      <Volume2 className="w-4 h-4" /> Listen
                    </button>
                    <button 
-                     onClick={() => handleGenerateVisual(msg.content.slice(0, 100))}
+                     onClick={() => generateVisualForMessage(msg.content.slice(0, 100))}
                      className="text-xs flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors"
                      title="Generate visual aid"
                    >
@@ -230,7 +156,7 @@ export const ChatInterface: React.FC = () => {
             </div>
           </div>
         ))}
-        {isLoading && (
+        {isChatLoading && (
           <div className="flex justify-start">
             <div className="bg-white p-4 rounded-2xl rounded-bl-none shadow-sm border border-slate-200">
               <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
@@ -275,11 +201,11 @@ export const ChatInterface: React.FC = () => {
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
             placeholder="Ask a question or topic..."
             className="flex-1 border-slate-200 rounded-full px-6 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            disabled={isLoading}
+            disabled={isChatLoading}
           />
           <button 
             onClick={handleSend}
-            disabled={(!input.trim() && !selectedImage) || isLoading}
+            disabled={(!input.trim() && !selectedImage) || isChatLoading}
             className="p-3 bg-indigo-600 text-white rounded-full hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md"
           >
             <Send className="w-5 h-5" />

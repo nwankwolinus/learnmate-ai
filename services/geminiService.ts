@@ -1,25 +1,45 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
-import { QuizQuestion, StudyPlan, DifficultyLevel, ExplanationStyle } from "../types";
+import { 
+  QuizQuestion, QuizQuestionSchema, 
+  StudyPlan, StudyPlanSchema,
+  DifficultyLevel, ExplanationStyle,
+  Message 
+} from "../types";
+import { z } from 'zod';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+// --- Error Handling ---
+class AppError extends Error {
+  constructor(message: string, public code: string) {
+    super(message);
+    this.name = 'AppError';
+  }
+}
+
 // --- Helpers ---
 
-// Helper to clean JSON string if the model wraps it in markdown code blocks
 const cleanJsonString = (str: string): string => {
   return str.replace(/^```json\n/, '').replace(/\n```$/, '').trim();
+};
+
+const validateApiKey = () => {
+  if (!process.env.API_KEY) {
+    throw new AppError("API Key is missing. Please configure your environment.", "AUTH_ERROR");
+  }
 };
 
 // --- Core Learning Features ---
 
 export const chatWithLearnMate = async (
-  message: string,
-  history: { role: string; parts: { text: string }[] }[],
+  currentMessage: string,
+  history: Message[],
   difficulty: DifficultyLevel,
   style: ExplanationStyle,
   imagePart?: { inlineData: { data: string; mimeType: string } }
 ): Promise<string> => {
-  const modelId = "gemini-2.5-flash"; // Efficient for text chat
+  validateApiKey();
+  const modelId = "gemini-2.5-flash";
   
   const systemInstruction = `You are LearnMate, an adaptive AI tutor. 
   Current Settings:
@@ -33,41 +53,60 @@ export const chatWithLearnMate = async (
   4. If an image is provided, analyze it and explain it in the context of the user's question.
   `;
 
-  const contents = [];
-  
-  // Add history (simplified for this demo)
-  // In a real app, map history correctly to Content objects
-  // For this single-turn/limited-context demo, we'll focus on the current prompt with system instruction
-  // But strictly, we should maintain context. Let's just append the current message.
-  
-  const parts: any[] = [{ text: message }];
-  if (imagePart) {
-    parts.unshift(imagePart);
-  }
+  // Construct history for Gemini
+  // We filter out audio/image-only messages that don't have text representation if needed, 
+  // but Gemini 2.5 supports multimodal history.
+  const contents = history.map(msg => {
+    const parts: any[] = [{ text: msg.content }];
+    if (msg.imageData) {
+      parts.push({
+        inlineData: {
+          mimeType: msg.imageData.mimeType,
+          data: msg.imageData.data
+        }
+      });
+    }
+    return {
+      role: msg.role,
+      parts
+    };
+  });
 
+  // Add current message
+  const currentParts: any[] = [{ text: currentMessage }];
+  if (imagePart) {
+    currentParts.unshift(imagePart);
+  }
+  
+  // To avoid duplication if the caller hasn't added the current message to history yet,
+  // we assume 'history' contains PREVIOUS messages.
+  
   try {
     const response = await ai.models.generateContent({
       model: modelId,
-      contents: { role: 'user', parts },
+      contents: [...contents, { role: 'user', parts: currentParts }],
       config: {
         systemInstruction: systemInstruction,
         temperature: 0.7,
       }
     });
     return response.text || "I couldn't generate a response.";
-  } catch (error) {
+  } catch (error: any) {
     console.error("Chat Error:", error);
-    throw error;
+    if (error.message?.includes('403') || error.message?.includes('401')) {
+      throw new AppError("Authentication failed. Please check your API Key.", "AUTH_ERROR");
+    }
+    throw new AppError("Failed to communicate with AI service.", "NETWORK_ERROR");
   }
 };
 
 // --- Smart Quiz Generator ---
 
 export const generateQuiz = async (topic: string, count: number = 5): Promise<QuizQuestion[]> => {
-  const modelId = "gemini-2.5-flash"; // Flash is capable enough for this, maybe Pro for very complex topics
+  validateApiKey();
+  const modelId = "gemini-2.5-flash";
   
-  const prompt = `Generate a quiz about "${topic}" with ${count} multiple-choice questions. 
-  Return ONLY raw JSON. Do not use markdown blocks.`;
+  const prompt = `Generate a quiz about "${topic}" with ${count} multiple-choice questions.`;
 
   try {
     const response = await ai.models.generateContent({
@@ -96,16 +135,27 @@ export const generateQuiz = async (topic: string, count: number = 5): Promise<Qu
     });
 
     const jsonStr = cleanJsonString(response.text || "[]");
-    return JSON.parse(jsonStr) as QuizQuestion[];
+    const rawData = JSON.parse(jsonStr);
+    
+    // Runtime Validation with Zod
+    const result = z.array(QuizQuestionSchema).safeParse(rawData);
+    
+    if (!result.success) {
+      console.error("Quiz Validation Failed:", result.error);
+      throw new AppError("AI generated invalid quiz format. Please try again.", "VALIDATION_ERROR");
+    }
+    
+    return result.data;
   } catch (error) {
     console.error("Quiz Gen Error:", error);
-    return [];
+    throw error instanceof AppError ? error : new AppError("Failed to generate quiz.", "GEN_ERROR");
   }
 };
 
 // --- Study Plan Generator ---
 
 export const generateStudyPlan = async (topic: string, duration: string): Promise<StudyPlan> => {
+  validateApiKey();
   const modelId = "gemini-2.5-flash";
 
   const prompt = `Create a study plan for "${topic}" that fits into a "${duration}" timeframe.`;
@@ -140,17 +190,26 @@ export const generateStudyPlan = async (topic: string, duration: string): Promis
     });
     
     const jsonStr = cleanJsonString(response.text || "{}");
-    return JSON.parse(jsonStr) as StudyPlan;
+    const rawData = JSON.parse(jsonStr);
+
+    // Runtime Validation
+    const result = StudyPlanSchema.safeParse(rawData);
+    if (!result.success) {
+      console.error("Study Plan Validation Failed:", result.error);
+      throw new AppError("AI generated invalid plan format.", "VALIDATION_ERROR");
+    }
+
+    return result.data;
   } catch (error) {
     console.error("Study Plan Error:", error);
-    throw error;
+    throw error instanceof AppError ? error : new AppError("Failed to generate study plan.", "GEN_ERROR");
   }
 };
 
 // --- Visual Aid Generation ---
 
 export const generateVisualAid = async (prompt: string): Promise<string | null> => {
-  // Use gemini-2.5-flash-image for generating educational diagrams/images
+  validateApiKey();
   const modelId = "gemini-2.5-flash-image";
 
   try {
@@ -161,7 +220,6 @@ export const generateVisualAid = async (prompt: string): Promise<string | null> 
       }
     });
 
-    // Iterate parts to find the image
     const parts = response.candidates?.[0]?.content?.parts;
     if (parts) {
       for (const part of parts) {
@@ -180,6 +238,7 @@ export const generateVisualAid = async (prompt: string): Promise<string | null> 
 // --- Text to Speech ---
 
 export const generateSpeech = async (text: string): Promise<string | null> => {
+  validateApiKey();
   const modelId = "gemini-2.5-flash-preview-tts";
   
   try {
@@ -190,7 +249,7 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Puck' }, // Puck is usually clear/friendly
+            prebuiltVoiceConfig: { voiceName: 'Puck' },
           },
         },
       },
@@ -204,7 +263,7 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
   }
 };
 
-// --- Audio Decoding Helper for Browser ---
+// --- Audio Decoding ---
 export const decodeAudioData = async (base64Audio: string, audioContext: AudioContext): Promise<AudioBuffer> => {
     const binaryString = atob(base64Audio);
     const len = binaryString.length;
@@ -212,16 +271,6 @@ export const decodeAudioData = async (base64Audio: string, audioContext: AudioCo
     for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
     }
-    // Note: The TTS model returns raw PCM. 
-    // However, the standard `ai.models.generateContent` with TTS usually returns a container format or PCM depending on config.
-    // The specific Gemini TTS preview usually returns raw PCM or WAV-like structure. 
-    // If raw PCM, we need the `decodeAudioData` manual implementation from the prompt guidance.
-    // However, `gemini-2.5-flash-preview-tts` usually sends PCM 24kHz Mono.
-    
-    // Let's implement the manual PCM decoder as per 'Live API' guidance but adapted for static TTS if needed.
-    // Actually, for the `generateContent` TTS endpoint (not Live), it typically returns valid audio file bytes (like WAV/MP3) wrapped in the blob?
-    // Wait, the prompt examples for TTS say: "The audio bytes returned by the API is raw PCM data."
-    // So we MUST use the manual decoder.
     
     const dataInt16 = new Int16Array(bytes.buffer);
     const numChannels = 1;

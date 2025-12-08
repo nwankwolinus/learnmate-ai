@@ -1,25 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { HashRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { BookOpen, Brain, Calendar, BarChart3, GraduationCap } from 'lucide-react';
 import { ChatInterface } from './components/ChatInterface';
 import { QuizInterface } from './components/QuizInterface';
 import { PlanInterface } from './components/PlanInterface';
 import { ProgressDashboard } from './components/ProgressDashboard';
-import { QuizResult } from './types';
 
 function App() {
-  // Simple local storage persistence for progress
-  const [results, setResults] = useState<QuizResult[]>(() => {
-    const saved = localStorage.getItem('learnmate_results');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const saveResult = (result: QuizResult) => {
-    const newResults = [...results, result];
-    setResults(newResults);
-    localStorage.setItem('learnmate_results', JSON.stringify(newResults));
-  };
-
   return (
     <HashRouter>
       <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
@@ -68,9 +55,9 @@ function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/learn" replace />} />
             <Route path="/learn" element={<ChatInterface />} />
-            <Route path="/quiz" element={<QuizInterface onSaveResult={saveResult} />} />
+            <Route path="/quiz" element={<QuizInterface />} />
             <Route path="/plan" element={<PlanInterface />} />
-            <Route path="/progress" element={<ProgressDashboard results={results} />} />
+            <Route path="/progress" element={<ProgressDashboard />} />
           </Routes>
         </main>
       </div>

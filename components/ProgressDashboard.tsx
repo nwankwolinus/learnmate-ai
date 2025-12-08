@@ -1,13 +1,11 @@
 import React from 'react';
-import { QuizResult } from '../types';
+import { useStore } from '../store/useStore';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { Trophy, Target, Book } from 'lucide-react';
 
-interface Props {
-  results: QuizResult[];
-}
+export const ProgressDashboard: React.FC = () => {
+  const { quizResults: results } = useStore();
 
-export const ProgressDashboard: React.FC<Props> = ({ results }) => {
   const totalQuizzes = results.length;
   const avgScore = results.length > 0 
     ? Math.round((results.reduce((acc, curr) => acc + (curr.score / curr.total) * 100, 0) / totalQuizzes))

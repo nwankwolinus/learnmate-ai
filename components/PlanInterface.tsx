@@ -1,30 +1,26 @@
 import React, { useState } from 'react';
-import { generateStudyPlan } from '../services/geminiService';
-import { StudyPlan } from '../types';
-import { Calendar, Clock, BookOpen, Loader2 } from 'lucide-react';
+import { useStore } from '../store/useStore';
+import { Calendar, Clock, BookOpen, Loader2, AlertCircle } from 'lucide-react';
 
 export const PlanInterface: React.FC = () => {
   const [topic, setTopic] = useState('');
   const [duration, setDuration] = useState('2 hours');
-  const [plan, setPlan] = useState<StudyPlan | null>(null);
-  const [loading, setLoading] = useState(false);
+  
+  const { 
+    currentPlan, 
+    isPlanLoading, 
+    planError, 
+    createPlan, 
+    resetPlan 
+  } = useStore();
 
-  const handleCreatePlan = async () => {
-    if (!topic) return;
-    setLoading(true);
-    try {
-      const generatedPlan = await generateStudyPlan(topic, duration);
-      setPlan(generatedPlan);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+  const handleCreatePlan = () => {
+    if (topic) createPlan(topic, duration);
   };
 
   return (
     <div className="max-w-4xl mx-auto">
-      {!plan && (
+      {!currentPlan && (
         <div className="bg-white rounded-2xl shadow-xl p-8 mb-6">
            <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
              <Calendar className="w-6 h-6 text-indigo-600" /> Study Plan Generator
@@ -58,25 +54,31 @@ export const PlanInterface: React.FC = () => {
              </div>
            </div>
 
+           {planError && (
+             <div className="mt-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg flex items-center gap-2">
+               <AlertCircle className="w-4 h-4" /> {planError}
+             </div>
+           )}
+
            <button 
              onClick={handleCreatePlan}
-             disabled={loading || !topic}
-             className="mt-6 w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors flex justify-center items-center gap-2"
+             disabled={isPlanLoading || !topic}
+             className="mt-6 w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors flex justify-center items-center gap-2 disabled:opacity-50"
            >
-             {loading ? <Loader2 className="animate-spin" /> : "Create Personalized Plan"}
+             {isPlanLoading ? <Loader2 className="animate-spin" /> : "Create Personalized Plan"}
            </button>
         </div>
       )}
 
-      {plan && (
+      {currentPlan && (
         <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
            <div className="bg-indigo-600 p-8 text-white">
-             <h1 className="text-3xl font-bold mb-2">{plan.topic}</h1>
+             <h1 className="text-3xl font-bold mb-2">{currentPlan.topic}</h1>
              <div className="flex items-center gap-2 opacity-90">
-               <Clock className="w-4 h-4" /> Total Duration: {plan.totalDuration}
+               <Clock className="w-4 h-4" /> Total Duration: {currentPlan.totalDuration}
              </div>
              <button 
-               onClick={() => setPlan(null)}
+               onClick={resetPlan}
                className="mt-4 text-xs bg-indigo-500 hover:bg-indigo-400 px-3 py-1 rounded-full transition-colors"
              >
                Create New Plan
@@ -85,7 +87,7 @@ export const PlanInterface: React.FC = () => {
            
            <div className="p-8">
              <div className="relative border-l-2 border-indigo-100 ml-4 space-y-10">
-                {plan.items.map((item, idx) => (
+                {currentPlan.items.map((item, idx) => (
                   <div key={idx} className="relative pl-8">
                     <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-indigo-600 border-4 border-white shadow-sm" />
                     
