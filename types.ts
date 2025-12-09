@@ -78,3 +78,10 @@ export interface ProgressStats {
   averageScore: number;
   recentTopics: string[];
 }
+
+export interface UserProfile {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+}

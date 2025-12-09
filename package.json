@@ -17,7 +17,8 @@
     "lucide-react": "0.344.0",
     "react-router-dom": "6.22.3",
     "zustand": "^5.0.9",
-    "zod": "3.22.4"
+    "zod": "3.22.4",
+    "firebase": "^12.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

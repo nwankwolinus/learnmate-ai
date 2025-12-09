@@ -24,10 +24,7 @@
             }
           }
         },
-        plugins: [
-            // Note: Typography plugin usually needs NPM but this CDN version might not include it fully automatically
-            // If it fails, standard prose classes just won't apply perfectly, but we handled that with manual styles too.
-        ],
+        plugins: [],
       }
     </script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -62,7 +59,12 @@
     "lucide-react": "https://esm.sh/lucide-react@0.344.0?external=react",
     "react-router-dom": "https://esm.sh/react-router-dom@6.22.3?external=react,react-dom",
     "zustand": "https://esm.sh/zustand@4.5.2?external=react",
+    "zustand/middleware": "https://esm.sh/zustand@4.5.2/middleware?external=react,zustand",
     "zod": "https://esm.sh/zod@3.22.4",
+    "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
+    "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
+    "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js",
+    "firebase/": "https://aistudiocdn.com/firebase@^12.6.0/",
     "zustand/": "https://aistudiocdn.com/zustand@^5.0.9/"
   }
 }

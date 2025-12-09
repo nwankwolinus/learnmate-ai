@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useStore } from '../store/useStore';
-import { CheckCircle, XCircle, Brain, Loader2, ArrowRight, AlertTriangle } from 'lucide-react';
+import { CheckCircle, XCircle, Brain, Loader2, ArrowRight, AlertTriangle, X } from 'lucide-react';
 
 export const QuizInterface: React.FC = () => {
   const { 
@@ -60,6 +60,9 @@ export const QuizInterface: React.FC = () => {
     clearQuiz();
     setScore(0);
     setQuizComplete(false);
+    setCurrentQuestionIndex(0);
+    setSelectedAnswer(null);
+    setShowFeedback(false);
   };
 
   if (isQuizGenerating) {
@@ -140,10 +143,20 @@ export const QuizInterface: React.FC = () => {
 
         <div className="p-8">
            <div className="flex justify-between items-center mb-6">
-             <span className="text-sm font-semibold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
-               Question {currentQuestionIndex + 1} / {quizQuestions.length}
-             </span>
-             <span className="text-slate-400 text-sm">Topic: {quizTopic}</span>
+             <div className="flex items-center gap-3">
+               <span className="text-sm font-semibold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
+                 Question {currentQuestionIndex + 1} / {quizQuestions.length}
+               </span>
+               <span className="text-slate-400 text-sm hidden sm:inline">Topic: {quizTopic}</span>
+             </div>
+             
+             <button 
+               onClick={resetLocal}
+               className="text-slate-400 hover:text-red-500 transition-colors flex items-center gap-1 text-xs uppercase font-bold tracking-wider"
+               title="Exit Quiz"
+             >
+               Exit <X className="w-4 h-4" />
+             </button>
            </div>
 
            <h3 className="text-xl font-bold text-slate-800 mb-6 leading-relaxed">

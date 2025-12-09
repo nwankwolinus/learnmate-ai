@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Send, Image as ImageIcon, Volume2, Loader2, Sparkles, X, AlertCircle, 
-  MessageSquare, Plus, Trash2, Menu, ChevronLeft, Search 
+  MessageSquare, Plus, Trash2, Menu, ChevronLeft, Search, CloudOff, RefreshCw
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { generateSpeech, decodeAudioData } from '../services/geminiService';
@@ -18,6 +18,8 @@ export const ChatInterface: React.FC = () => {
     deleteSession,
     isChatLoading, 
     chatError, 
+    cloudError,
+    retrySync,
     sendMessage, 
     generateVisualForMessage,
     clearChatError,
@@ -32,6 +34,7 @@ export const ChatInterface: React.FC = () => {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isRetrying, setIsRetrying] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -72,6 +75,12 @@ export const ChatInterface: React.FC = () => {
     clearImage();
     
     await sendMessage(msg, img);
+  };
+
+  const handleRetrySync = async () => {
+    setIsRetrying(true);
+    await retrySync();
+    setIsRetrying(false);
   };
 
   const handleAudio = async (text: string) => {
@@ -259,6 +268,25 @@ export const ChatInterface: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Cloud Error Banner */}
+        {cloudError && (
+          <div className="bg-orange-50 p-3 border-b border-orange-100 flex items-center gap-3 text-orange-800 text-xs md:text-sm animate-fade-in">
+            <CloudOff className="w-4 h-4 shrink-0" />
+            <div className="flex-1">
+              <span className="font-bold">Sync Error: </span>
+              {cloudError}
+            </div>
+            <button 
+              onClick={handleRetrySync} 
+              disabled={isRetrying}
+              className="px-3 py-1 bg-white border border-orange-200 rounded-md text-orange-700 hover:bg-orange-50 font-medium flex items-center gap-1 transition-colors disabled:opacity-50"
+            >
+              {isRetrying ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Error Banner */}
         {chatError && (

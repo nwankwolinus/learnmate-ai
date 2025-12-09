@@ -17,10 +17,33 @@ class AppError extends Error {
   }
 }
 
+const handleGeminiError = (error: any, context: string): never => {
+  console.error(`${context} Error:`, error);
+  
+  const msg = error.message || '';
+  const status = error.status || error.code;
+  const strError = JSON.stringify(error);
+
+  if (
+    msg.includes('403') || msg.includes('401') || 
+    status === 403 || status === 401 ||
+    strError.includes('PERMISSION_DENIED') || strError.includes('UNAUTHENTICATED')
+  ) {
+    throw new AppError("Access Denied. Please ensure your API Key is valid and the Generative Language API is enabled in your Google Cloud Project.", "AUTH_ERROR");
+  }
+  
+  if (msg.includes('429') || status === 429 || strError.includes('RESOURCE_EXHAUSTED')) {
+    throw new AppError("Too many requests. Please wait a moment before trying again.", "RATE_LIMIT");
+  }
+
+  throw new AppError(`AI Service Error: ${msg || 'Unknown error occurred'}`, "GEN_ERROR");
+};
+
 // --- Helpers ---
 
 const cleanJsonString = (str: string): string => {
-  return str.replace(/^```json\n/, '').replace(/\n```$/, '').trim();
+  // Remove markdown code blocks (```json ... ``` or just ``` ... ```)
+  return str.replace(/```json/g, '').replace(/```/g, '').trim();
 };
 
 const validateApiKey = () => {
@@ -78,9 +101,6 @@ export const chatWithLearnMate = async (
     currentParts.unshift(imagePart);
   }
   
-  // To avoid duplication if the caller hasn't added the current message to history yet,
-  // we assume 'history' contains PREVIOUS messages.
-  
   try {
     const response = await ai.models.generateContent({
       model: modelId,
@@ -92,11 +112,7 @@ export const chatWithLearnMate = async (
     });
     return response.text || "I couldn't generate a response.";
   } catch (error: any) {
-    console.error("Chat Error:", error);
-    if (error.message?.includes('403') || error.message?.includes('401')) {
-      throw new AppError("Authentication failed. Please check your API Key.", "AUTH_ERROR");
-    }
-    throw new AppError("Failed to communicate with AI service.", "NETWORK_ERROR");
+    handleGeminiError(error, 'Chat');
   }
 };
 
@@ -163,8 +179,7 @@ export const generateQuiz = async (topic: string, count: number = 5): Promise<Qu
     
     return result.data;
   } catch (error) {
-    console.error("Quiz Gen Error:", error);
-    throw error instanceof AppError ? error : new AppError("Failed to generate quiz.", "GEN_ERROR");
+    handleGeminiError(error, 'Quiz Gen');
   }
 };
 
@@ -197,10 +212,12 @@ export const generateStudyPlan = async (topic: string, duration: string): Promis
                   duration: { type: Type.STRING },
                   description: { type: Type.STRING },
                   resources: { type: Type.ARRAY, items: { type: Type.STRING } }
-                }
+                },
+                required: ["step", "title", "duration", "description"]
               }
             }
-          }
+          },
+          required: ["topic", "totalDuration", "items"]
         }
       }
     });
@@ -217,8 +234,7 @@ export const generateStudyPlan = async (topic: string, duration: string): Promis
 
     return result.data;
   } catch (error) {
-    console.error("Study Plan Error:", error);
-    throw error instanceof AppError ? error : new AppError("Failed to generate study plan.", "GEN_ERROR");
+    handleGeminiError(error, 'Study Plan');
   }
 };
 
@@ -247,6 +263,7 @@ export const generateVisualAid = async (prompt: string): Promise<string | null> 
     return null;
   } catch (error) {
     console.error("Image Gen Error:", error);
+    // Silent fail for optional visual aids, or return null
     return null;
   }
 };

@@ -7,7 +7,8 @@ import {
   ExplanationStyle, 
   QuizQuestion, 
   QuizResult, 
-  StudyPlan 
+  StudyPlan,
+  UserProfile
 } from '../types';
 import { 
   chatWithLearnMate, 
@@ -16,8 +17,20 @@ import {
   generateVisualAid,
   generateChatTitle
 } from '../services/geminiService';
+import { db } from '../services/firebase';
+import { doc, setDoc, getDoc, collection, getDocs, writeBatch, deleteDoc } from 'firebase/firestore';
 
 interface AppState {
+  // --- Auth ---
+  user: UserProfile | null;
+  isAuthModalOpen: boolean;
+  cloudError: string | null;
+  setUser: (user: UserProfile | null) => void;
+  openAuthModal: () => void;
+  closeAuthModal: () => void;
+  syncUserSessions: (user: UserProfile | null) => Promise<void>;
+  retrySync: () => Promise<void>;
+
   // --- Settings ---
   difficulty: DifficultyLevel;
   style: ExplanationStyle;
@@ -72,9 +85,133 @@ const fileToBase64 = (file: File): Promise<string> => {
   });
 };
 
+// Firestore does not support 'undefined' values.
+// This helper strips undefined keys from objects by serializing/deserializing.
+const cleanDataForFirestore = (data: any): any => {
+  return JSON.parse(JSON.stringify(data));
+};
+
+const saveSessionToDb = async (uid: string, session: ChatSession) => {
+  if (!db) return;
+  try {
+    const cleanSession = cleanDataForFirestore(session);
+    await setDoc(doc(db, 'users', uid, 'sessions', session.id), cleanSession);
+  } catch (e) {
+    // We suppress individual save errors to avoid spamming the console if the API is down,
+    // as the main sync error will be caught and displayed by syncUserSessions.
+    console.warn("Failed to save session to cloud:", e);
+  }
+};
+
+const deleteSessionFromDb = async (uid: string, sessionId: string) => {
+  if (!db) return;
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'sessions', sessionId));
+  } catch (e) {
+    console.warn("Failed to delete session from cloud:", e);
+  }
+};
+
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
+      // Auth
+      user: null,
+      isAuthModalOpen: false,
+      cloudError: null,
+      setUser: (user) => set({ user }),
+      openAuthModal: () => set({ isAuthModalOpen: true }),
+      closeAuthModal: () => set({ isAuthModalOpen: false }),
+
+      syncUserSessions: async (user) => {
+        set({ cloudError: null }); // Clear previous errors to show we are trying
+        
+        if (!user || !db) {
+          return;
+        }
+
+        try {
+          const sessionsRef = collection(db, 'users', user.uid, 'sessions');
+          const snapshot = await getDocs(sessionsRef);
+          
+          const cloudSessions: ChatSession[] = [];
+          snapshot.forEach(doc => {
+            cloudSessions.push(doc.data() as ChatSession);
+          });
+
+          // Merge: If we have local sessions (guest mode) that are NOT in cloud, upload them.
+          const { sessions: localSessions } = get();
+          
+          const batch = writeBatch(db);
+          let hasUpdates = false;
+
+          const mergedSessions = [...cloudSessions];
+
+          for (const local of localSessions) {
+            const exists = cloudSessions.find(c => c.id === local.id);
+            if (!exists) {
+              // It's a new guest session, upload it
+              const ref = doc(db, 'users', user.uid, 'sessions', local.id);
+              // Clean data before adding to batch to prevent 'undefined' errors
+              batch.set(ref, cleanDataForFirestore(local));
+              mergedSessions.push(local);
+              hasUpdates = true;
+            }
+          }
+
+          if (hasUpdates) {
+            await batch.commit();
+          }
+
+          // Sort by creation time desc
+          mergedSessions.sort((a, b) => b.createdAt - a.createdAt);
+
+          set({ sessions: mergedSessions, cloudError: null });
+          
+          // Restore messages if current session is selected
+          const { currentSessionId } = get();
+          if (currentSessionId) {
+             const found = mergedSessions.find(s => s.id === currentSessionId);
+             if (found) {
+               set({ messages: found.messages });
+             } else if (mergedSessions.length > 0) {
+               set({ currentSessionId: mergedSessions[0].id, messages: mergedSessions[0].messages });
+             }
+          } else if (mergedSessions.length > 0) {
+             set({ currentSessionId: mergedSessions[0].id, messages: mergedSessions[0].messages });
+          }
+
+        } catch (e: any) {
+          console.error("Sync failed:", e);
+          let errorMessage = "Could not sync with the cloud. Working in offline mode.";
+          
+          const code = e.code || '';
+          const msg = e.message || '';
+
+          if (code === 'permission-denied') {
+             if (msg.includes('Cloud Firestore API')) {
+                errorMessage = "The Cloud Firestore API is not enabled. Please enable it in Google Cloud Console.";
+             } else {
+                errorMessage = "Access denied. Please check your Firestore Security Rules in Firebase Console (set to 'allow read, write').";
+             }
+          } else if (code === 'not-found' || msg.includes('not-found') || msg.includes('database')) {
+             // Specific instruction for the common "default database" missing error
+             errorMessage = "Database not found. Please create a Firestore database (named '(default)') in your Firebase Console.";
+          } else if (code === 'unavailable') {
+             errorMessage = "Network Error: Firestore is unreachable. You are offline.";
+          }
+          
+          set({ cloudError: errorMessage });
+        }
+      },
+
+      retrySync: async () => {
+        const { user, syncUserSessions } = get();
+        if (user) {
+          await syncUserSessions(user);
+        }
+      },
+
       // Settings
       difficulty: DifficultyLevel.Beginner,
       style: ExplanationStyle.Standard,
@@ -92,11 +229,15 @@ export const useStore = create<AppState>()(
           messages: [],
           createdAt: Date.now()
         };
-        set((state) => ({ 
-          sessions: [newSession, ...state.sessions], 
-          currentSessionId: newSession.id,
-          messages: [] 
-        }));
+        
+        set((state) => {
+          const updatedSessions = [newSession, ...state.sessions];
+          return { 
+            sessions: updatedSessions, 
+            currentSessionId: newSession.id,
+            messages: [] 
+          };
+        });
       },
 
       selectSession: (sessionId) => {
@@ -110,7 +251,7 @@ export const useStore = create<AppState>()(
       },
 
       deleteSession: (sessionId) => {
-        const { sessions, currentSessionId } = get();
+        const { sessions, currentSessionId, user, cloudError } = get();
         const updatedSessions = sessions.filter(s => s.id !== sessionId);
         
         let newCurrentId = currentSessionId;
@@ -131,6 +272,11 @@ export const useStore = create<AppState>()(
           currentSessionId: newCurrentId, 
           messages: newMessages 
         });
+
+        // Only delete from DB if logged in AND no cloud error
+        if (user && !cloudError) {
+          deleteSessionFromDb(user.uid, sessionId);
+        }
       },
 
       // Chat
@@ -138,12 +284,11 @@ export const useStore = create<AppState>()(
       isChatLoading: false,
       chatError: null,
       sendMessage: async (content, imageFile) => {
-        let { sessions, currentSessionId, difficulty, style } = get();
+        let { sessions, currentSessionId, difficulty, style, user } = get();
         
         // Ensure a session exists
         if (!currentSessionId) {
           get().createSession();
-          // Update local vars after state change
           currentSessionId = get().currentSessionId;
           sessions = get().sessions;
         }
@@ -152,13 +297,18 @@ export const useStore = create<AppState>()(
 
         // Create User Message
         const userMsgId = Date.now().toString();
+        
+        // Build message object carefully to avoid 'undefined'
         const newUserMsg: Message = {
           id: userMsgId,
           role: 'user',
           content,
           timestamp: Date.now(),
-          imageUrl: imageFile ? URL.createObjectURL(imageFile) : undefined,
         };
+
+        if (imageFile) {
+          newUserMsg.imageUrl = URL.createObjectURL(imageFile);
+        }
 
         let imagePart = undefined;
         if (imageFile) {
@@ -199,6 +349,12 @@ export const useStore = create<AppState>()(
           chatError: null 
         });
 
+        // Save to DB immediately if user is logged in AND cloud is healthy
+        // This check prevents repeatedly trying to hit a non-existent DB
+        if (user && !get().cloudError) {
+           saveSessionToDb(user.uid, currentSession);
+        }
+
         // Generate Smart Title asynchronously if first message
         if (isFirstMessage) {
           generateChatTitle(content).then((title) => {
@@ -207,6 +363,12 @@ export const useStore = create<AppState>()(
               const sIdx = sList.findIndex(s => s.id === currentSessionId);
               if (sIdx !== -1) {
                 sList[sIdx] = { ...sList[sIdx], title };
+                
+                // Sync title update to DB if healthy
+                if (user && !state.cloudError) {
+                   saveSessionToDb(user.uid, sList[sIdx]);
+                }
+                
                 return { sessions: sList };
               }
               return {};
@@ -239,9 +401,14 @@ export const useStore = create<AppState>()(
               sess.messages = [...sess.messages, aiMsg];
               sessionsAfterAi[idx] = sess;
               
+              // Sync to DB if healthy
+              if (user && !state.cloudError) {
+                saveSessionToDb(user.uid, sess);
+              }
+
               return { 
                 sessions: sessionsAfterAi, 
-                messages: sess.messages,
+                messages: sess.messages, 
                 isChatLoading: false 
               };
             }
@@ -256,7 +423,7 @@ export const useStore = create<AppState>()(
       },
 
       generateVisualForMessage: async (prompt) => {
-        const { currentSessionId } = get();
+        const { currentSessionId, user } = get();
         if (!currentSessionId) return;
 
         set({ isChatLoading: true });
@@ -279,6 +446,10 @@ export const useStore = create<AppState>()(
                   const sess = { ...updatedSessions[idx] };
                   sess.messages = [...sess.messages, visualMsg];
                   updatedSessions[idx] = sess;
+
+                  if (user && !state.cloudError) {
+                    saveSessionToDb(user.uid, sess);
+                  }
                   
                   return {
                     sessions: updatedSessions,
@@ -346,14 +517,16 @@ export const useStore = create<AppState>()(
     {
       name: 'learnmate-storage',
       partialize: (state) => ({
+        // Only persist if NOT logged in, or persist basic settings?
+        // Actually, persist works fine. We will overwrite 'sessions' when logging in.
         sessions: state.sessions,
         currentSessionId: state.currentSessionId,
         quizResults: state.quizResults,
         difficulty: state.difficulty,
-        style: state.style
+        style: state.style,
+        user: state.user
       }),
       onRehydrateStorage: () => (state) => {
-        // Hydrate the messages view from the current session upon load
         if (state && state.currentSessionId && state.sessions) {
            const session = state.sessions.find(s => s.id === state.currentSessionId);
            if (session) {
