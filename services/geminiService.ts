@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { 
   QuizQuestion, QuizQuestionSchema, 
@@ -258,7 +259,8 @@ export const generateLearningPath = async (goal: string): Promise<LearningPath> 
   const modelId = "gemini-2.5-flash";
 
   const prompt = `Create a structured learning path (Curriculum) to achieve the goal: "${goal}". 
-  Break it down into 5-10 dependent topics (nodes).
+  Break it down into 5-10 dependent topics (nodes). 
+  Ensure the graph is connected and flows logically from basic to advanced.
   Return a list of nodes where each node has a unique ID, a label, description, and a list of prerequisite IDs (parents).`;
 
   try {
@@ -301,7 +303,7 @@ export const generateLearningPath = async (goal: string): Promise<LearningPath> 
     // Auto-layout logic (Topological sort / Level assignment)
     const nodes = rawData.nodes;
     const levels: { [id: string]: number } = {};
-    const placedNodes: PathNode[] = [];
+    const nodesByLevel: { [level: number]: any[] } = {};
 
     // Calculate levels based on dependencies
     // Max 100 iterations to prevent infinite loops if AI generates cyclic graph
@@ -327,19 +329,35 @@ export const generateLearningPath = async (goal: string): Promise<LearningPath> 
       if (!changed) break; // All resolved
     }
 
-    // Assign X/Y based on level and column index
-    const levelCounts: { [level: number]: number } = {};
-    
-    placedNodes.push(...nodes.map((node: any) => {
-      const level = levels[node.id] || 0;
-      if (!levelCounts[level]) levelCounts[level] = 0;
-      
-      const x = 100 + (level * 250); // Horizontal spacing
-      const y = 100 + (levelCounts[level] * 150); // Vertical spacing
-      
-      levelCounts[level]++;
+    // Group by level for vertical centering
+    nodes.forEach((node: any) => {
+        const lvl = levels[node.id] || 0;
+        if (!nodesByLevel[lvl]) nodesByLevel[lvl] = [];
+        nodesByLevel[lvl].push(node);
+    });
 
-      return {
+    // Layout constants
+    const CANVAS_CENTER_Y = 400; // Center of view
+    const LEVEL_WIDTH = 350;     // Increased horizontal spacing
+    const NODE_HEIGHT = 200;     // Increased vertical spacing
+
+    const placedNodes: PathNode[] = [];
+    
+    // Sort nodes in each level to minimize crossing (simple heuristic based on parent Y could go here, but index is okay for now)
+    
+    nodes.forEach((node: any) => {
+      const level = levels[node.id] || 0;
+      const nodesInThisLevel = nodesByLevel[level];
+      const indexInLevel = nodesInThisLevel.findIndex((n: any) => n.id === node.id);
+      
+      // Calculate start Y to center the column
+      const totalLevelHeight = (nodesInThisLevel.length - 1) * NODE_HEIGHT;
+      const startY = CANVAS_CENTER_Y - (totalLevelHeight / 2);
+      
+      const x = 100 + (level * LEVEL_WIDTH);
+      const y = startY + (indexInLevel * NODE_HEIGHT);
+
+      placedNodes.push({
         id: node.id,
         label: node.label,
         description: node.description,
@@ -347,8 +365,8 @@ export const generateLearningPath = async (goal: string): Promise<LearningPath> 
         status: node.prerequisites.length === 0 ? 'unlocked' : 'locked',
         x,
         y
-      };
-    }));
+      });
+    });
 
     return {
       id: Date.now().toString(),
