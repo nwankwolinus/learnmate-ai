@@ -2,8 +2,10 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { 
   QuizQuestion, QuizQuestionSchema, 
   StudyPlan, StudyPlanSchema,
-  DifficultyLevel, ExplanationStyle,
-  Message 
+  DifficultyLevel, ExplanationStyle, AIPersona,
+  Message,
+  LearningPath, PathNode,
+  AIProgressInsights
 } from "../types";
 import { z } from 'zod';
 
@@ -16,28 +18,6 @@ class AppError extends Error {
     this.name = 'AppError';
   }
 }
-
-const handleGeminiError = (error: any, context: string): never => {
-  console.error(`${context} Error:`, error);
-  
-  const msg = error.message || '';
-  const status = error.status || error.code;
-  const strError = JSON.stringify(error);
-
-  if (
-    msg.includes('403') || msg.includes('401') || 
-    status === 403 || status === 401 ||
-    strError.includes('PERMISSION_DENIED') || strError.includes('UNAUTHENTICATED')
-  ) {
-    throw new AppError("Access Denied. Please ensure your API Key is valid and the Generative Language API is enabled in your Google Cloud Project.", "AUTH_ERROR");
-  }
-  
-  if (msg.includes('429') || status === 429 || strError.includes('RESOURCE_EXHAUSTED')) {
-    throw new AppError("Too many requests. Please wait a moment before trying again.", "RATE_LIMIT");
-  }
-
-  throw new AppError(`AI Service Error: ${msg || 'Unknown error occurred'}`, "GEN_ERROR");
-};
 
 // --- Helpers ---
 
@@ -59,33 +39,60 @@ export const chatWithLearnMate = async (
   history: Message[],
   difficulty: DifficultyLevel,
   style: ExplanationStyle,
-  imagePart?: { inlineData: { data: string; mimeType: string } }
+  persona: AIPersona,
+  mediaPart?: { inlineData: { data: string; mimeType: string } }
 ): Promise<string> => {
   validateApiKey();
   const modelId = "gemini-2.5-flash";
   
-  const systemInstruction = `You are LearnMate, an adaptive AI tutor. 
-  Current Settings:
-  - Difficulty Level: ${difficulty}
-  - Teaching Style: ${style}
+  const personaInstructions = {
+    [AIPersona.Professional]: "Tone: Formal, precise, objective, standard academic tone. No emojis. Goal: Deliver accurate, high-quality information efficiently.",
+    [AIPersona.Friend]: "Tone: High energy, casual, uses emojis (🚀✨), super encouraging. Goal: Make learning fun and accessible, like a study buddy.",
+    [AIPersona.Socratic]: "Tone: Thoughtful, inquisitive. Answer questions with questions to guide the user to the answer. Deep philosophical vibe.",
+    [AIPersona.Sergeant]: "Tone: Strict, demanding, concise, military style. Use capitalization for emphasis. 'NO EXCUSES!'. Goal: Push the user to master the material through discipline.",
+    [AIPersona.Mentor]: "Tone: Warm, patient, empathetic, soft. 'It's okay to make mistakes'. Goal: Nurture the user's growth and confidence."
+  };
+
+  const systemInstruction = `You are LearnMate.
   
-  Instructions:
+  CURRENT MODE:
+  - Persona: ${persona}
+  - Difficulty Level: ${difficulty}
+  - Teaching Style: ${style} (Note: Persona dictates the tone/voice, Style dictates the content structure/method).
+  
+  PERSONA GUIDELINES:
+  ${personaInstructions[persona]}
+
+  MOOD & ADAPTATION:
+  Analyze the user's input for emotional cues (frustration, confusion, confidence).
+  - If Frustrated: De-escalate, simplify, and encourage (unless Drill Sergeant, then push harder).
+  - If Confused: Break it down further, check for understanding.
+  - If Confident: Challenge them with a deeper question.
+
+  MULTIMEDIA HANDLING:
+  - If an image/PDF/audio is provided, analyze it thoroughly.
+  - If Audio: Transcribe relevant parts if needed, answer questions spoken in the audio.
+  - If PDF: Summarize key points or answer questions based on the text.
+  - If Image: Explain the diagram or text visible.
+
+  VIDEO RECOMMENDATIONS:
+  - If the user asks for videos or if a topic is complex and better explained visually, provide a valid YouTube search link or specific famous educational video titles (e.g., CrashCourse, Khan Academy).
+  - Format video suggestions as: "I found a great video for you: https://www.youtube.com/watch?v=..."
+
+  GENERAL INSTRUCTIONS:
   1. Explain concepts clearly based on the difficulty level.
   2. If the style is ELI5, use simple language. If Analogy, use strong real-world comparisons.
-  3. Be encouraging and concise unless asked for deep detail.
-  4. If an image is provided, analyze it and explain it in the context of the user's question.
+  3. Be encouraging (in your persona's voice).
   `;
 
   // Construct history for Gemini
-  // We filter out audio/image-only messages that don't have text representation if needed, 
-  // but Gemini 2.5 supports multimodal history.
   const contents = history.map(msg => {
     const parts: any[] = [{ text: msg.content }];
-    if (msg.imageData) {
+    if (msg.attachmentData) {
       parts.push({
         inlineData: {
-          mimeType: msg.imageData.mimeType,
-          data: msg.imageData.data
+          mimeType: msg.attachmentData.mimeType,
+          data: msg.attachmentData.data
         }
       });
     }
@@ -97,8 +104,8 @@ export const chatWithLearnMate = async (
 
   // Add current message
   const currentParts: any[] = [{ text: currentMessage }];
-  if (imagePart) {
-    currentParts.unshift(imagePart);
+  if (mediaPart) {
+    currentParts.unshift(mediaPart);
   }
   
   try {
@@ -112,7 +119,11 @@ export const chatWithLearnMate = async (
     });
     return response.text || "I couldn't generate a response.";
   } catch (error: any) {
-    handleGeminiError(error, 'Chat');
+    console.error("Chat Error:", error);
+    if (error.message?.includes('403') || error.message?.includes('401')) {
+      throw new AppError("Authentication failed. Please check your API Key.", "AUTH_ERROR");
+    }
+    throw new AppError("Failed to communicate with AI service.", "NETWORK_ERROR");
   }
 };
 
@@ -179,7 +190,8 @@ export const generateQuiz = async (topic: string, count: number = 5): Promise<Qu
     
     return result.data;
   } catch (error) {
-    handleGeminiError(error, 'Quiz Gen');
+    console.error("Quiz Gen Error:", error);
+    throw error instanceof AppError ? error : new AppError("Failed to generate quiz.", "GEN_ERROR");
   }
 };
 
@@ -234,7 +246,174 @@ export const generateStudyPlan = async (topic: string, duration: string): Promis
 
     return result.data;
   } catch (error) {
-    handleGeminiError(error, 'Study Plan');
+    console.error("Study Plan Error:", error);
+    throw error instanceof AppError ? error : new AppError("Failed to generate study plan.", "GEN_ERROR");
+  }
+};
+
+// --- Learning Path Generator ---
+
+export const generateLearningPath = async (goal: string): Promise<LearningPath> => {
+  validateApiKey();
+  const modelId = "gemini-2.5-flash";
+
+  const prompt = `Create a structured learning path (Curriculum) to achieve the goal: "${goal}". 
+  Break it down into 5-10 dependent topics (nodes).
+  Return a list of nodes where each node has a unique ID, a label, description, and a list of prerequisite IDs (parents).`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            description: { type: Type.STRING },
+            nodes: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  label: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  prerequisites: { 
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "IDs of nodes that must be completed before this one"
+                  }
+                },
+                required: ["id", "label", "description", "prerequisites"]
+              }
+            }
+          },
+          required: ["title", "description", "nodes"]
+        }
+      }
+    });
+
+    const jsonStr = cleanJsonString(response.text || "{}");
+    const rawData = JSON.parse(jsonStr);
+
+    // Auto-layout logic (Topological sort / Level assignment)
+    const nodes = rawData.nodes;
+    const levels: { [id: string]: number } = {};
+    const placedNodes: PathNode[] = [];
+
+    // Calculate levels based on dependencies
+    // Max 100 iterations to prevent infinite loops if AI generates cyclic graph
+    for (let i = 0; i < 100; i++) {
+      let changed = false;
+      nodes.forEach((node: any) => {
+        if (levels[node.id] !== undefined) return;
+        
+        // If no prereqs, level 0
+        if (node.prerequisites.length === 0) {
+          levels[node.id] = 0;
+          changed = true;
+          return;
+        }
+
+        // Check if all prereqs have levels
+        const parentLevels = node.prerequisites.map((pid: string) => levels[pid]);
+        if (parentLevels.every((l: number) => l !== undefined)) {
+          levels[node.id] = Math.max(...parentLevels) + 1;
+          changed = true;
+        }
+      });
+      if (!changed) break; // All resolved
+    }
+
+    // Assign X/Y based on level and column index
+    const levelCounts: { [level: number]: number } = {};
+    
+    placedNodes.push(...nodes.map((node: any) => {
+      const level = levels[node.id] || 0;
+      if (!levelCounts[level]) levelCounts[level] = 0;
+      
+      const x = 100 + (level * 250); // Horizontal spacing
+      const y = 100 + (levelCounts[level] * 150); // Vertical spacing
+      
+      levelCounts[level]++;
+
+      return {
+        id: node.id,
+        label: node.label,
+        description: node.description,
+        prerequisites: node.prerequisites,
+        status: node.prerequisites.length === 0 ? 'unlocked' : 'locked',
+        x,
+        y
+      };
+    }));
+
+    return {
+      id: Date.now().toString(),
+      userId: '',
+      title: rawData.title,
+      description: rawData.description,
+      nodes: placedNodes,
+      progress: 0,
+      createdAt: Date.now(),
+      isPublic: false
+    };
+
+  } catch (error) {
+    console.error("Learning Path Error:", error);
+    throw error instanceof AppError ? error : new AppError("Failed to generate learning path.", "GEN_ERROR");
+  }
+};
+
+// --- Analytics Insight Generator ---
+
+export const generateProgressInsights = async (
+  stats: any
+): Promise<AIProgressInsights> => {
+  validateApiKey();
+  const modelId = "gemini-2.5-flash";
+
+  const prompt = `Analyze this student's learning data and provide insights.
+  Data: ${JSON.stringify(stats)}
+  
+  Provide:
+  1. A short summary of their progress.
+  2. Identify 2-3 weak areas based on quiz scores/topics.
+  3. 3 actionable study tips.
+  4. A prediction for their mastery timeframe.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            summary: { type: Type.STRING },
+            weakAreas: { type: Type.ARRAY, items: { type: Type.STRING } },
+            tips: { type: Type.ARRAY, items: { type: Type.STRING } },
+            prediction: { type: Type.STRING }
+          },
+          required: ["summary", "weakAreas", "tips", "prediction"]
+        }
+      }
+    });
+
+    const jsonStr = cleanJsonString(response.text || "{}");
+    return JSON.parse(jsonStr) as AIProgressInsights;
+  } catch (error) {
+    console.error("Insight Gen Error:", error);
+    // Fallback if AI fails
+    return {
+      summary: "Keep studying to generate insights!",
+      weakAreas: [],
+      tips: ["Review your recent quizzes", "Study consistently"],
+      prediction: "Data unavailable"
+    };
   }
 };
 
@@ -263,17 +442,27 @@ export const generateVisualAid = async (prompt: string): Promise<string | null> 
     return null;
   } catch (error) {
     console.error("Image Gen Error:", error);
-    // Silent fail for optional visual aids, or return null
     return null;
   }
 };
 
 // --- Text to Speech ---
 
-export const generateSpeech = async (text: string): Promise<string | null> => {
+export const generateSpeech = async (text: string, persona: AIPersona = AIPersona.Professional): Promise<string | null> => {
   validateApiKey();
   const modelId = "gemini-2.5-flash-preview-tts";
   
+  // Map personas to voice names
+  const voiceMap: { [key in AIPersona]: string } = {
+    [AIPersona.Professional]: 'Kore',
+    [AIPersona.Friend]: 'Puck',
+    [AIPersona.Socratic]: 'Fenrir',
+    [AIPersona.Sergeant]: 'Charon',
+    [AIPersona.Mentor]: 'Aoede'
+  };
+
+  const voiceName = voiceMap[persona] || 'Kore';
+
   try {
     const response = await ai.models.generateContent({
       model: modelId,
@@ -282,7 +471,7 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Puck' },
+            prebuiltVoiceConfig: { voiceName },
           },
         },
       },

@@ -11,7 +11,8 @@ export const QuizInterface: React.FC = () => {
     quizError,
     generateQuizAction,
     saveQuizResult,
-    clearQuiz
+    clearQuiz,
+    addQuizToSRS
   } = useStore();
 
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -19,12 +20,14 @@ export const QuizInterface: React.FC = () => {
   const [showFeedback, setShowFeedback] = useState(false);
   const [score, setScore] = useState(0);
   const [quizComplete, setQuizComplete] = useState(false);
+  const [userAnswers, setUserAnswers] = useState<(number | null)[]>([]);
 
   const handleGenerate = () => {
     if (quizTopic.trim()) {
       setQuizComplete(false);
       setCurrentQuestionIndex(0);
       setScore(0);
+      setUserAnswers([]);
       generateQuizAction(quizTopic);
     }
   };
@@ -34,6 +37,11 @@ export const QuizInterface: React.FC = () => {
     setSelectedAnswer(index);
     setShowFeedback(true);
     
+    // Track answer for SRS
+    const newAnswers = [...userAnswers];
+    newAnswers[currentQuestionIndex] = index;
+    setUserAnswers(newAnswers);
+
     if (index === quizQuestions[currentQuestionIndex].correctAnswer) {
       setScore(prev => prev + 1);
     }
@@ -47,12 +55,18 @@ export const QuizInterface: React.FC = () => {
       setCurrentQuestionIndex(prev => prev + 1);
     } else {
       setQuizComplete(true);
-      saveQuizResult({
+      
+      const result = {
         score: score + (selectedAnswer === quizQuestions[currentQuestionIndex].correctAnswer ? 0 : 0),
         total: quizQuestions.length,
         date: new Date().toISOString(),
         topic: quizTopic
-      });
+      };
+      
+      saveQuizResult(result);
+      
+      // Auto-add to Spaced Repetition System
+      addQuizToSRS(quizQuestions, userAnswers, quizTopic);
     }
   };
 
@@ -63,6 +77,7 @@ export const QuizInterface: React.FC = () => {
     setCurrentQuestionIndex(0);
     setSelectedAnswer(null);
     setShowFeedback(false);
+    setUserAnswers([]);
   };
 
   if (isQuizGenerating) {
@@ -117,10 +132,15 @@ export const QuizInterface: React.FC = () => {
       <div className="max-w-md mx-auto mt-10 p-8 bg-white rounded-2xl shadow-lg text-center">
         <h2 className="text-3xl font-bold text-slate-800 mb-2">Quiz Complete!</h2>
         <div className="text-6xl font-black text-indigo-600 my-6">{percentage}%</div>
-        <p className="text-slate-600 mb-8">You got {score} out of {quizQuestions.length} questions correct.</p>
+        <p className="text-slate-600 mb-2">You got {score} out of {quizQuestions.length} questions correct.</p>
+        
+        <div className="bg-green-50 text-green-700 p-3 rounded-lg text-sm mb-8 flex items-center justify-center gap-2">
+          <CheckCircle className="w-4 h-4" /> Questions added to Smart Review
+        </div>
+
         <button 
           onClick={resetLocal}
-          className="bg-slate-900 text-white px-8 py-3 rounded-xl font-semibold hover:bg-slate-800"
+          className="bg-slate-900 text-white px-8 py-3 rounded-xl font-semibold hover:bg-slate-800 transition-colors"
         >
           Take Another Quiz
         </button>

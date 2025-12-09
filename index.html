@@ -15,6 +15,7 @@
             },
             animation: {
               'fade-in': 'fadeIn 0.5s ease-out forwards',
+              'bounce-slow': 'bounce 3s infinite',
             },
             keyframes: {
               fadeIn: {
@@ -56,6 +57,8 @@
     "recharts": "https://esm.sh/recharts@2.12.2?external=react,react-dom",
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.31.0",
     "react-markdown": "https://esm.sh/react-markdown@9.0.1?external=react",
+    "react-syntax-highlighter": "https://esm.sh/react-syntax-highlighter@15.5.0?external=react",
+    "react-syntax-highlighter/dist/esm/styles/prism": "https://esm.sh/react-syntax-highlighter@15.5.0/dist/esm/styles/prism?external=react",
     "lucide-react": "https://esm.sh/lucide-react@0.344.0?external=react",
     "react-router-dom": "https://esm.sh/react-router-dom@6.22.3?external=react,react-dom",
     "zustand": "https://esm.sh/zustand@4.5.2?external=react",
@@ -65,9 +68,25 @@
     "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
     "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js",
     "firebase/": "https://aistudiocdn.com/firebase@^12.6.0/",
-    "zustand/": "https://aistudiocdn.com/zustand@^5.0.9/"
+    "zustand/": "https://aistudiocdn.com/zustand@^5.0.9/",
+    "react-syntax-highlighter/": "https://aistudiocdn.com/react-syntax-highlighter@^16.1.0/",
+    "jspdf": "https://esm.sh/jspdf@2.5.1",
+    "canvas-confetti": "https://esm.sh/canvas-confetti@1.9.2"
   }
 }
+</script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/service-worker.js')
+        .then(registration => {
+          console.log('SW registered: ', registration);
+        })
+        .catch(registrationError => {
+          console.log('SW registration failed: ', registrationError);
+        });
+    });
+  }
 </script>
 </head>
   <body>

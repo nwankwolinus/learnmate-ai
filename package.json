@@ -14,11 +14,14 @@
     "recharts": "2.12.2",
     "@google/genai": "^1.31.0",
     "react-markdown": "9.0.1",
+    "react-syntax-highlighter": "^16.1.0",
     "lucide-react": "0.344.0",
     "react-router-dom": "6.22.3",
     "zustand": "^5.0.9",
     "zod": "3.22.4",
-    "firebase": "^12.6.0"
+    "firebase": "^12.6.0",
+    "jspdf": "2.5.1",
+    "canvas-confetti": "1.9.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
