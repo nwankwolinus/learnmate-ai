@@ -30,7 +30,18 @@ function App() {
   useEffect(() => {
     initializeNetworkListeners();
     // If auth is not initialized (e.g. missing API keys), do not try to listen
-    if (!auth) return;
+    if (!auth) {
+        // Fallback for non-firebase environments
+        if (!user) {
+            setUser({
+              uid: 'guest',
+              email: 'guest@demo.com',
+              displayName: 'Guest User',
+              photoURL: null
+            });
+        }
+        return;
+    }
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
@@ -44,9 +55,13 @@ function App() {
         // Sync sessions from Firestore
         await syncUserSessions(userProfile);
       } else {
-        setUser(null);
-        // Clear sessions or handle logout state if needed
-        // Note: useStore logic could clear sessions here if strict privacy is needed
+        // Auto-login as Guest if no user is found (Satisfies "No Login Required" requirement)
+        setUser({
+            uid: 'guest',
+            email: 'guest@demo.com',
+            displayName: 'Guest User',
+            photoURL: null
+        });
       }
     });
     return () => unsubscribe();
@@ -57,8 +72,7 @@ function App() {
     try {
       await signOut(auth);
       setShowProfileMenu(false);
-      // Optional: Clear persisted storage or reset store state here
-      // window.location.reload(); // Simple way to clear state
+      // The observer will trigger and set user to Guest automatically
     } catch (error) {
       console.error("Sign out error", error);
     }

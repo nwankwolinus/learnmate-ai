@@ -1,3 +1,4 @@
+
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { 
@@ -38,7 +39,7 @@ import {
 import { db } from '../services/firebase';
 import { 
   doc, setDoc, getDoc, collection, getDocs, writeBatch, deleteDoc, 
-  addDoc, query, where, updateDoc
+  addDoc, query, where, updateDoc, onSnapshot, orderBy, arrayUnion
 } from 'firebase/firestore';
 import { 
   RANKS, 
@@ -211,7 +212,7 @@ const cleanDataForFirestore = (data: any): any => {
 };
 
 const saveSessionToDb = async (uid: string, session: ChatSession, isDbAvailable: boolean) => {
-  if (!db || !isDbAvailable) return;
+  if (!db || !isDbAvailable || uid === 'guest') return;
   try {
     const cleanSession = cleanDataForFirestore(session);
     await setDoc(doc(db, 'users', uid, 'sessions', session.id), cleanSession);
@@ -221,7 +222,7 @@ const saveSessionToDb = async (uid: string, session: ChatSession, isDbAvailable:
 };
 
 const deleteSessionFromDb = async (uid: string, sessionId: string, isDbAvailable: boolean) => {
-  if (!db || !isDbAvailable) return;
+  if (!db || !isDbAvailable || uid === 'guest') return;
   try {
     await deleteDoc(doc(db, 'users', uid, 'sessions', sessionId));
   } catch (e) {
@@ -343,7 +344,7 @@ export const useStore = create<AppState>()(
 
         get().checkAchievements();
 
-        if (user && isDbAvailable && db) {
+        if (user && user.uid !== 'guest' && isDbAvailable && db) {
            try {
               await setDoc(doc(db, 'users', user.uid, 'settings', 'gamification'), cleanDataForFirestore(newState));
            } catch (e) { console.warn("XP Sync Error (Local only)", e); }
@@ -408,7 +409,7 @@ export const useStore = create<AppState>()(
       closeLevelUpModal: () => set(s => ({ gamification: { ...s.gamification, showLevelUp: false } })),
 
       syncGamification: async (user) => {
-         if (!user || !db || !get().isDbAvailable) return;
+         if (!user || !db || !get().isDbAvailable || user.uid === 'guest') return;
          try {
             const docRef = doc(db, 'users', user.uid, 'settings', 'gamification');
             const snap = await getDoc(docRef);
@@ -423,7 +424,7 @@ export const useStore = create<AppState>()(
         const updated = { ...get().settings, ...newSettings };
         set({ settings: updated });
         const { user, isDbAvailable } = get();
-        if (user && isDbAvailable && db) {
+        if (user && user.uid !== 'guest' && isDbAvailable && db) {
            try {
              await setDoc(doc(db, 'users', user.uid, 'settings', 'preferences'), updated);
            } catch (e) { console.warn("Failed to save settings", e); }
@@ -447,7 +448,7 @@ export const useStore = create<AppState>()(
          set({ streak: updatedStreakData });
          get().checkStreak(); 
          
-         if (user && isDbAvailable && db) {
+         if (user && user.uid !== 'guest' && isDbAvailable && db) {
             try {
                await setDoc(doc(db, 'users', user.uid, 'settings', 'streak'), cleanDataForFirestore(updatedStreakData));
             } catch (e) { console.warn("Failed to save streak", e); }
@@ -492,7 +493,7 @@ export const useStore = create<AppState>()(
         set({ streak: updatedStreak });
         get().checkAchievements(); 
         
-        if (user && isDbAvailable && db) {
+        if (user && user.uid !== 'guest' && isDbAvailable && db) {
            try {
               await setDoc(doc(db, 'users', user.uid, 'settings', 'streak'), cleanDataForFirestore(updatedStreak));
            } catch (e) { console.warn("Streak sync error", e); }
@@ -519,8 +520,12 @@ export const useStore = create<AppState>()(
       },
 
       syncUserSessions: async (user) => {
-        set({ cloudError: null, isDbAvailable: true });
-        if (!user || !db) return;
+        set({ cloudError: null });
+        
+        // Critical: Check isDbAvailable first to prevent persistent connection retries
+        // if the DB doesn't exist.
+        if (!user || !db || user.uid === 'guest' || !get().isDbAvailable) return;
+
         try {
           // Check if DB is actually reachable by doing a lightweight fetch
           const settingsRef = doc(db, 'users', user.uid, 'settings', 'preferences');
@@ -572,10 +577,18 @@ export const useStore = create<AppState>()(
             }
           }
         } catch (e: any) {
+          // Explicitly check for offline/network errors
+          if (e.message?.includes('offline') || e.code === 'unavailable') {
+             console.log("Sync skipped: Client is offline");
+             set({ cloudError: "You are offline." });
+             // We keep isDbAvailable=true to ensure local persistence queues writes
+             return;
+          }
+
           console.error("Sync failed, falling back to local mode:", e);
           
-          if (e.code === 'not-found' || e.code === 'unavailable' || e.message?.includes('database')) {
-             set({ isDbAvailable: false, cloudError: "Database unreachable. Changes saved locally." });
+          if (e.code === 'not-found' || e.message?.includes('database') || e.message?.includes('project')) {
+             set({ isDbAvailable: false, cloudError: "Database not configured. Local mode only." });
           } else {
              set({ cloudError: "Sync issue. Working offline." });
           }
@@ -583,8 +596,9 @@ export const useStore = create<AppState>()(
       },
 
       retrySync: async () => {
-        const { user, syncUserSessions } = get();
-        if (user) await syncUserSessions(user);
+        const { user, syncUserSessions, isDbAvailable } = get();
+        // Allow retry only if we haven't permanently disabled DB access
+        if (user && isDbAvailable) await syncUserSessions(user);
       },
 
       difficulty: DifficultyLevel.Beginner,
@@ -605,7 +619,7 @@ export const useStore = create<AppState>()(
         };
         set((state) => ({ 
           sessions: [newSession, ...state.sessions], 
-          currentSessionId: newSession.id,
+          currentSessionId: newSession.id, 
           messages: [] 
         }));
       },
@@ -629,7 +643,7 @@ export const useStore = create<AppState>()(
           }
         }
         set({ sessions: updatedSessions, currentSessionId: newCurrentId, messages: newMessages });
-        if (user && isDbAvailable) deleteSessionFromDb(user.uid, sessionId, isDbAvailable);
+        if (user && user.uid !== 'guest' && isDbAvailable) deleteSessionFromDb(user.uid, sessionId, isDbAvailable);
       },
 
       messages: [],
@@ -655,7 +669,7 @@ export const useStore = create<AppState>()(
         const newUserMsg: Message = {
           id: Date.now().toString(),
           role: 'user',
-          content: content || (file ? `Attached file: ${file.name || 'media'}` : ''),
+          content: content || (file ? `Attached file: ${(file instanceof File ? file.name : 'media')}` : ''),
           timestamp: Date.now(),
         };
 
@@ -679,7 +693,8 @@ export const useStore = create<AppState>()(
             } else if (type === 'application/pdf') {
               newUserMsg.type = 'file';
               newUserMsg.fileUrl = URL.createObjectURL(file);
-              newUserMsg.fileName = (file as File).name;
+              // Safe cast because file must be File object here, or we use fallback
+              newUserMsg.fileName = (file instanceof File) ? file.name : 'Document';
             }
 
             mediaPart = { inlineData: { data: base64, mimeType: type } };
@@ -703,7 +718,7 @@ export const useStore = create<AppState>()(
         updatedSessions[sessionIndex] = currentSession;
         
         set({ sessions: updatedSessions, messages: currentSession.messages, isChatLoading: true, chatError: null });
-        if (user) saveSessionToDb(user.uid, currentSession, isDbAvailable);
+        if (user && user.uid !== 'guest') saveSessionToDb(user.uid, currentSession, isDbAvailable);
 
         if (isFirstMessage && content) {
            generateChatTitle(content).then(title => {
@@ -712,7 +727,7 @@ export const useStore = create<AppState>()(
                  const idx = list.findIndex(i => i.id === currentSessionId);
                  if (idx !== -1) {
                     list[idx] = { ...list[idx], title };
-                    if (user) saveSessionToDb(user.uid, list[idx], isDbAvailable);
+                    if (user && user.uid !== 'guest') saveSessionToDb(user.uid, list[idx], isDbAvailable);
                     return { sessions: list };
                  }
                  return {};
@@ -721,6 +736,11 @@ export const useStore = create<AppState>()(
         }
 
         try {
+          // Update the content line to use safe cast
+          if (!newUserMsg.content && file) {
+            newUserMsg.content = `Attached file: ${(file instanceof File) ? file.name : 'media'}`;
+          }
+
           const responseText = await chatWithLearnMate(
             content || "Please analyze this attachment.",
             currentSession.messages.slice(0, -1),
@@ -742,7 +762,7 @@ export const useStore = create<AppState>()(
                 const sess = { ...list[idx] };
                 sess.messages = [...sess.messages, aiMsg];
                 list[idx] = sess;
-                if (user) saveSessionToDb(user.uid, sess, isDbAvailable);
+                if (user && user.uid !== 'guest') saveSessionToDb(user.uid, sess, isDbAvailable);
                 return { sessions: list, messages: sess.messages, isChatLoading: false };
              }
              return { isChatLoading: false };
@@ -795,7 +815,7 @@ export const useStore = create<AppState>()(
              isChatLoading: false 
            });
 
-           if (user) {
+           if (user && user.uid !== 'guest') {
               saveSessionToDb(user.uid, currentSession, isDbAvailable);
            }
 
@@ -855,7 +875,7 @@ export const useStore = create<AppState>()(
 
       srsItems: [],
       syncSRSItems: async (user) => {
-        if (!user || !db || !get().isDbAvailable) return;
+        if (!user || !db || !get().isDbAvailable || user.uid === 'guest') return;
         try {
            const ref = collection(db, 'users', user.uid, 'srs_items');
            const snap = await getDocs(ref);
@@ -886,7 +906,7 @@ export const useStore = create<AppState>()(
            newItems.push(newItem);
         });
         set(s => ({ srsItems: [...s.srsItems, ...newItems] }));
-        if (user && isDbAvailable && db) {
+        if (user && user.uid !== 'guest' && isDbAvailable && db) {
            const batch = writeBatch(db);
            newItems.forEach(item => {
               batch.set(doc(db, 'users', user.uid, 'srs_items', item.id), cleanDataForFirestore(item));
@@ -909,7 +929,7 @@ export const useStore = create<AppState>()(
          get().addXP(10, "Card Reviewed");
          get().updateStudyTime(1);
 
-         if (user && isDbAvailable && db) {
+         if (user && user.uid !== 'guest' && isDbAvailable && db) {
             setDoc(doc(db, 'users', user.uid, 'srs_items', item.id), cleanDataForFirestore(updated)).catch(e => console.warn("SRS Update failed", e));
          }
       },
@@ -943,8 +963,8 @@ export const useStore = create<AppState>()(
 
       createGroup: async (name, description, isPublic) => {
         const { user, isDbAvailable } = get();
-        if (!user || !db || !isDbAvailable) {
-           set({ groupError: "Feature requires online database." });
+        if (!user || !db || !isDbAvailable || user.uid === 'guest') {
+           set({ groupError: "Online account required to create groups. Please sign in." });
            return;
         }
         set({ groupLoading: true, groupError: null });
@@ -986,16 +1006,179 @@ export const useStore = create<AppState>()(
       },
 
       joinGroup: async (code) => {
-         // (Implementation logic remains similar to previous version, ensuring db check)
-         // ... For brevity, assuming similar structure but with checks for isDbAvailable
+         const { user, isDbAvailable, unsubscribeGroup } = get();
+         if (!user || !db || !isDbAvailable || user.uid === 'guest') {
+             set({ groupError: "Online account required for groups." });
+             return;
+         }
+         
+         set({ groupLoading: true, groupError: null });
+         if (unsubscribeGroup) unsubscribeGroup();
+
+         try {
+             // Find group by code
+             const q = query(collection(db, 'groups'), where('code', '==', code));
+             const snapshot = await getDocs(q);
+             
+             if (snapshot.empty) {
+                 set({ groupLoading: false, groupError: "Invalid group code." });
+                 return;
+             }
+             
+             const groupDoc = snapshot.docs[0];
+             const groupId = groupDoc.id;
+             const groupData = groupDoc.data() as StudyGroup;
+             
+             // Add user to members if not present
+             const memberRef = doc(db, 'groups', groupId, 'members', user.uid);
+             const memberSnap = await getDoc(memberRef);
+             
+             if (!memberSnap.exists()) {
+                 const newMember: GroupMember = {
+                     uid: user.uid,
+                     displayName: user.displayName || 'User',
+                     photoURL: user.photoURL,
+                     joinedAt: Date.now(),
+                     lastActive: Date.now(),
+                     role: 'member',
+                     stats: { messagesSent: 0, quizzesTaken: 0 }
+                 };
+                 await setDoc(memberRef, newMember);
+             }
+
+             // Subscribe to Group Data
+             const unsubGroup = onSnapshot(doc(db, 'groups', groupId), (doc) => {
+                 set({ currentGroup: doc.data() as StudyGroup });
+             });
+
+             // Subscribe to Members
+             const unsubMembers = onSnapshot(collection(db, 'groups', groupId, 'members'), (snap) => {
+                 const members: GroupMember[] = [];
+                 snap.forEach(d => members.push(d.data() as GroupMember));
+                 set({ groupMembers: members });
+             });
+
+             // Subscribe to Messages
+             const msgQuery = query(collection(db, 'groups', groupId, 'messages'), orderBy('timestamp', 'asc'));
+             const unsubMessages = onSnapshot(msgQuery, (snap) => {
+                 const msgs: GroupMessage[] = [];
+                 snap.forEach(d => msgs.push(d.data() as GroupMessage));
+                 set({ groupMessages: msgs });
+             });
+
+             // Cleanup function
+             set({ 
+                 groupLoading: false, 
+                 currentGroup: { ...groupData, id: groupId },
+                 unsubscribeGroup: () => {
+                     unsubGroup();
+                     unsubMembers();
+                     unsubMessages();
+                 }
+             });
+
+         } catch (e: any) {
+             set({ groupLoading: false, groupError: e.message || "Failed to join group" });
+         }
       },
       
-      leaveGroup: async () => {}, // Placeholder
-      sendGroupMessage: async () => {}, // Placeholder
-      startGroupQuiz: async () => {}, // Placeholder
-      submitGroupQuizAnswer: async () => {}, // Placeholder
-      nextGroupQuizQuestion: async () => {}, // Placeholder
-      endGroupQuiz: async () => {}, // Placeholder
+      leaveGroup: async () => {
+         const { currentGroup, user, unsubscribeGroup, isDbAvailable } = get();
+         if (!currentGroup || !user || !db || !isDbAvailable || user.uid === 'guest') return;
+         
+         if (unsubscribeGroup) unsubscribeGroup();
+         
+         try {
+             await deleteDoc(doc(db, 'groups', currentGroup.id, 'members', user.uid));
+             set({ currentGroup: null, groupMembers: [], groupMessages: [], unsubscribeGroup: null });
+         } catch(e) { console.warn("Leave group error", e); }
+      },
+
+      sendGroupMessage: async (content) => {
+         const { currentGroup, user, isDbAvailable } = get();
+         if (!currentGroup || !user || !db || !isDbAvailable || user.uid === 'guest') return;
+         
+         try {
+             const newMsg: GroupMessage = {
+                 id: Date.now().toString(),
+                 senderId: user.uid,
+                 senderName: user.displayName || 'User',
+                 senderPhoto: user.photoURL,
+                 content,
+                 timestamp: Date.now(),
+                 type: 'text'
+             };
+             await addDoc(collection(db, 'groups', currentGroup.id, 'messages'), newMsg);
+         } catch(e) { console.warn("Send msg error", e); }
+      },
+
+      startGroupQuiz: async (topic) => {
+          const { currentGroup, user, isDbAvailable } = get();
+          if (!currentGroup || !user || !db || !isDbAvailable || user.uid === 'guest') return;
+          
+          try {
+             const questions = await generateQuiz(topic, 5);
+             const quizSession = {
+                 isActive: true,
+                 topic,
+                 questions,
+                 currentQuestionIndex: 0,
+                 status: 'in-progress',
+                 participants: {}
+             };
+             
+             await updateDoc(doc(db, 'groups', currentGroup.id), { activeQuiz: quizSession });
+          } catch(e) { console.warn("Start quiz error", e); }
+      },
+
+      submitGroupQuizAnswer: async (qIndex, aIndex) => {
+          const { currentGroup, user, isDbAvailable } = get();
+          if (!currentGroup || !currentGroup.activeQuiz || !user || !db || !isDbAvailable || user.uid === 'guest') return;
+
+          try {
+              const quiz = currentGroup.activeQuiz;
+              const isCorrect = quiz.questions[qIndex].correctAnswer === aIndex;
+              const points = isCorrect ? 100 : 0;
+              
+              // Firestore update for nested map field is tricky, usually needs dot notation
+              // `activeQuiz.participants.${user.uid}`
+              const userKey = `activeQuiz.participants.${user.uid}`;
+              
+              // We need to fetch current participant data first or assume structure
+              const currentScore = quiz.participants[user.uid]?.score || 0;
+              const currentAnswers = quiz.participants[user.uid]?.answers || [];
+              
+              const newAnswers = [...currentAnswers];
+              newAnswers[qIndex] = aIndex;
+
+              await updateDoc(doc(db, 'groups', currentGroup.id), {
+                  [`${userKey}.score`]: currentScore + points,
+                  [`${userKey}.answers`]: newAnswers
+              });
+          } catch(e) { console.warn("Submit answer error", e); }
+      },
+
+      nextGroupQuizQuestion: async () => {
+          const { currentGroup, isDbAvailable } = get();
+          if (!currentGroup?.activeQuiz || !db || !isDbAvailable) return;
+          
+          const nextIdx = currentGroup.activeQuiz.currentQuestionIndex + 1;
+          if (nextIdx < currentGroup.activeQuiz.questions.length) {
+              await updateDoc(doc(db, 'groups', currentGroup.id), {
+                  'activeQuiz.currentQuestionIndex': nextIdx
+              });
+          } else {
+              await updateDoc(doc(db, 'groups', currentGroup.id), {
+                  'activeQuiz.status': 'completed'
+              });
+          }
+      },
+
+      endGroupQuiz: async () => {
+          const { currentGroup, isDbAvailable } = get();
+          if (!currentGroup || !db || !isDbAvailable) return;
+          await updateDoc(doc(db, 'groups', currentGroup.id), { activeQuiz: null });
+      },
 
       // --- LEARNING PATHS ---
       learningPaths: [],
@@ -1016,7 +1199,7 @@ export const useStore = create<AppState>()(
           set({ learningPaths: updatedPaths, activePathId: newPath.id, isPathGenerating: false });
           
           // 2. Try to sync to Firestore in background (if available)
-          if (user && db && isDbAvailable) {
+          if (user && db && isDbAvailable && user.uid !== 'guest') {
              try {
                const pathRef = doc(db, 'paths', newPath.id);
                await setDoc(pathRef, { 
@@ -1052,7 +1235,7 @@ export const useStore = create<AppState>()(
       deletePath: (id) => {
         const { learningPaths, user, isDbAvailable } = get();
         set({ learningPaths: learningPaths.filter(p => p.id !== id), activePathId: null });
-        if (user && db && isDbAvailable) {
+        if (user && db && isDbAvailable && user.uid !== 'guest') {
            deleteDoc(doc(db, 'paths', id)).catch(console.warn);
         }
       },
@@ -1093,7 +1276,7 @@ export const useStore = create<AppState>()(
         get().checkAchievements();
 
         // Sync Update Background
-        if (user && db && isDbAvailable) {
+        if (user && db && isDbAvailable && user.uid !== 'guest') {
            try {
              const batch = writeBatch(db);
              // Update node
@@ -1125,7 +1308,7 @@ export const useStore = create<AppState>()(
       },
 
       syncPaths: async (user) => {
-         if (!user || !db || !get().isDbAvailable) return;
+         if (!user || !db || !get().isDbAvailable || user.uid === 'guest') return;
          try {
             // Query root paths collection by userId
             const q = query(collection(db, 'paths'), where('userId', '==', user.uid));
@@ -1170,7 +1353,7 @@ export const useStore = create<AppState>()(
 
       publishPath: async (pathId) => {
          const { user, isDbAvailable } = get();
-         if (!user || !db || !isDbAvailable) return;
+         if (!user || !db || !isDbAvailable || user.uid === 'guest') return;
          
          try {
             await updateDoc(doc(db, 'paths', pathId), { isPublic: true });
@@ -1195,7 +1378,7 @@ export const useStore = create<AppState>()(
 
          set({ learningPaths: [...learningPaths, newPath], activePathId: newId });
 
-         if (user && db && isDbAvailable) {
+         if (user && db && isDbAvailable && user.uid !== 'guest') {
              const pathRef = doc(db, 'paths', newId);
              await setDoc(pathRef, { 
                 ...newPath,

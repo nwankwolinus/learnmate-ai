@@ -1,5 +1,5 @@
 
-import { initializeApp, FirebaseApp } from 'firebase/app';
+import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, Auth } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -19,7 +19,7 @@ const firebaseConfig = {
   measurementId: "G-7M6HGE04RC"
 };
 
-let app: FirebaseApp | undefined;
+let app: any;
 let auth: Auth | undefined;
 let db: Firestore | undefined;
 let googleProvider: GoogleAuthProvider | undefined;
@@ -29,16 +29,19 @@ let googleProvider: GoogleAuthProvider | undefined;
 if (firebaseConfig.apiKey) {
   try {
     app = initializeApp(firebaseConfig);
-    auth = getAuth(app);
-    
-    // Initialize Firestore with explicit settings for persistence (New SDK v9+ way)
-    db = initializeFirestore(app, {
-       localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager()
-       })
-    });
 
-    googleProvider = new GoogleAuthProvider();
+    if (app) {
+        auth = getAuth(app);
+        
+        // Initialize Firestore with explicit settings for persistence (New SDK v9+ way)
+        db = initializeFirestore(app, {
+           localCache: persistentLocalCache({
+              tabManager: persistentMultipleTabManager()
+           })
+        });
+    
+        googleProvider = new GoogleAuthProvider();
+    }
   } catch (error) {
     console.error("Firebase initialization error:", error);
   }
