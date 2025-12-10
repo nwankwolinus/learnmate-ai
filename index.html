@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -78,12 +79,16 @@
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/service-worker.js')
+      // Use relative path and ignore origin mismatch errors in preview environments
+      navigator.serviceWorker.register('./service-worker.js')
         .then(registration => {
           console.log('SW registered: ', registration);
         })
         .catch(registrationError => {
-          console.log('SW registration failed: ', registrationError);
+          // Suppress errors common in preview/sandbox environments
+          if (!registrationError.message.includes('origin')) {
+             console.log('SW registration failed: ', registrationError);
+          }
         });
     });
   }

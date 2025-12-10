@@ -192,6 +192,9 @@ export interface LearningPath {
   progress: number; // 0-100
   createdAt: number;
   isPublic: boolean;
+  authorName?: string;
+  likes?: number;
+  forkedFrom?: string;
 }
 
 // --- Settings & Consistency Types ---

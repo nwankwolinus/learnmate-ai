@@ -4,9 +4,9 @@ import { getAuth, GoogleAuthProvider, Auth } from 'firebase/auth';
 import { 
   getFirestore, 
   Firestore, 
-  enableIndexedDbPersistence, 
   initializeFirestore,
-  CACHE_SIZE_UNLIMITED 
+  persistentLocalCache,
+  persistentMultipleTabManager
 } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -31,20 +31,11 @@ if (firebaseConfig.apiKey) {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     
-    // Initialize Firestore with explicit settings
+    // Initialize Firestore with explicit settings for persistence (New SDK v9+ way)
     db = initializeFirestore(app, {
-       cacheSizeBytes: CACHE_SIZE_UNLIMITED
-    });
-    
-    // Enable Offline Persistence
-    enableIndexedDbPersistence(db).catch((err) => {
-      if (err.code == 'failed-precondition') {
-          // Multiple tabs open, persistence can only be enabled in one tab at a a time.
-          console.warn('Firestore persistence failed: Multiple tabs open');
-      } else if (err.code == 'unimplemented') {
-          // The current browser does not support all of the features required to enable persistence
-          console.warn('Firestore persistence not supported in this browser');
-      }
+       localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+       })
     });
 
     googleProvider = new GoogleAuthProvider();

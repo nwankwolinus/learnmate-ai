@@ -1,5 +1,5 @@
 import jsPDF from 'jspdf';
-import { ChatSession, Certificate, UserProfile, StreakData, AIProgressInsights } from '../types';
+import { ChatSession, Certificate, UserProfile, StreakData, AIProgressInsights, LearningPath } from '../types';
 
 // --- Chat Exports ---
 
@@ -294,4 +294,74 @@ export const generateProgressReportPDF = (
     }
 
     doc.save('Progress_Report.pdf');
+};
+
+// --- Learning Path Study Guide ---
+
+export const generateLearningPathPDF = (path: LearningPath) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.width;
+  const margin = 20;
+  const maxLineWidth = pageWidth - margin * 2;
+  
+  // Header
+  doc.setFontSize(22);
+  doc.setTextColor(79, 70, 229); // Indigo
+  doc.setFont('helvetica', 'bold');
+  doc.text(path.title, margin, 20);
+  
+  doc.setFontSize(12);
+  doc.setTextColor(100);
+  doc.setFont('helvetica', 'normal');
+  const descLines = doc.splitTextToSize(path.description, maxLineWidth);
+  doc.text(descLines, margin, 30);
+  
+  let y = 30 + (descLines.length * 6) + 10;
+  
+  doc.setDrawColor(200);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 10;
+  
+  // Nodes
+  doc.setFontSize(16);
+  doc.setTextColor(0);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Curriculum Roadmap', margin, y);
+  y += 10;
+  
+  // Sort nodes roughly by logical order (using levels logic from component is hard here, so we use prereq depth or simple iteration)
+  // Simple BFS/Topological sort approximation for list
+  const sortedNodes = [...path.nodes].sort((a, b) => {
+     if (a.prerequisites.includes(b.id)) return 1;
+     if (b.prerequisites.includes(a.id)) return -1;
+     return 0;
+  });
+
+  sortedNodes.forEach((node, index) => {
+    if (y > 270) {
+      doc.addPage();
+      y = 20;
+    }
+    
+    // Node Status
+    let statusIcon = "O";
+    if (node.status === 'completed') statusIcon = "[X]";
+    else if (node.status === 'locked') statusIcon = "[Locked]";
+    
+    doc.setFontSize(12);
+    doc.setTextColor(0);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${index + 1}. ${node.label} ${statusIcon}`, margin, y);
+    y += 6;
+    
+    doc.setFontSize(10);
+    doc.setTextColor(80);
+    doc.setFont('helvetica', 'normal');
+    const nodeDesc = doc.splitTextToSize(node.description, maxLineWidth - 5);
+    doc.text(nodeDesc, margin + 5, y);
+    
+    y += (nodeDesc.length * 5) + 8;
+  });
+  
+  doc.save(`StudyGuide_${path.title.replace(/\s+/g, '_')}.pdf`);
 };

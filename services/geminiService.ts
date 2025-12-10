@@ -299,73 +299,110 @@ export const generateLearningPath = async (goal: string): Promise<LearningPath> 
 
     const jsonStr = cleanJsonString(response.text || "{}");
     const rawData = JSON.parse(jsonStr);
+    
+    // --- Robust BFS Graph Layout Algorithm ---
 
-    // Auto-layout logic (Topological sort / Level assignment)
-    const nodes = rawData.nodes;
-    const levels: { [id: string]: number } = {};
-    const nodesByLevel: { [level: number]: any[] } = {};
+    // 1. Sanitize Data: Map IDs to Nodes & Validate Prereqs
+    const nodeMap = new Map();
+    // Normalize IDs to string to prevent type mismatches
+    const nodes = rawData.nodes.map((n: any) => ({ ...n, id: String(n.id).trim() }));
+    
+    // Create quick lookup
+    nodes.forEach((n: any) => nodeMap.set(n.id, n));
 
-    // Calculate levels based on dependencies
-    // Max 100 iterations to prevent infinite loops if AI generates cyclic graph
-    for (let i = 0; i < 100; i++) {
-      let changed = false;
-      nodes.forEach((node: any) => {
-        if (levels[node.id] !== undefined) return;
-        
-        // If no prereqs, level 0
-        if (node.prerequisites.length === 0) {
-          levels[node.id] = 0;
-          changed = true;
-          return;
-        }
+    // Remove "ghost" prerequisites (IDs that don't exist in the node list)
+    const validNodes = nodes.map((n: any) => ({
+      ...n,
+      prerequisites: (n.prerequisites || [])
+        .map((pid: any) => String(pid).trim())
+        .filter((pid: string) => nodeMap.has(pid))
+    }));
 
-        // Check if all prereqs have levels
-        const parentLevels = node.prerequisites.map((pid: string) => levels[pid]);
-        if (parentLevels.every((l: number) => l !== undefined)) {
-          levels[node.id] = Math.max(...parentLevels) + 1;
-          changed = true;
-        }
-      });
-      if (!changed) break; // All resolved
-    }
+    // 2. Build Adjacency Lists & In-Degree Map
+    const adj: Map<string, string[]> = new Map(); // Parent -> Children
+    const inDegree: Map<string, number> = new Map(); // Node -> Number of parents
 
-    // Group by level for vertical centering
-    nodes.forEach((node: any) => {
-        const lvl = levels[node.id] || 0;
-        if (!nodesByLevel[lvl]) nodesByLevel[lvl] = [];
-        nodesByLevel[lvl].push(node);
+    // Initialize
+    validNodes.forEach((n: any) => {
+      if (!adj.has(n.id)) adj.set(n.id, []);
+      inDegree.set(n.id, 0);
     });
 
-    // Layout constants
-    const CANVAS_CENTER_Y = 400; // Center of view
-    const LEVEL_WIDTH = 350;     // Increased horizontal spacing
-    const NODE_HEIGHT = 200;     // Increased vertical spacing
+    // Populate graph
+    validNodes.forEach((n: any) => {
+      n.prerequisites.forEach((parentId: string) => {
+        if (!adj.has(parentId)) adj.set(parentId, []);
+        adj.get(parentId)!.push(n.id);
+        inDegree.set(n.id, (inDegree.get(n.id) || 0) + 1);
+      });
+    });
+
+    // 3. Layer Assignment using Kahn's Algorithm (BFS)
+    const layers: Map<string, number> = new Map();
+    const queue: string[] = [];
+
+    // Find roots (nodes with 0 incoming edges)
+    inDegree.forEach((count, id) => {
+      if (count === 0) {
+        layers.set(id, 0);
+        queue.push(id);
+      }
+    });
+
+    // Process queue
+    while (queue.length > 0) {
+      const u = queue.shift()!;
+      const currentLayer = layers.get(u)!;
+      
+      const children = adj.get(u) || [];
+      for (const v of children) {
+        inDegree.set(v, (inDegree.get(v)!) - 1);
+        if (inDegree.get(v) === 0) {
+           layers.set(v, currentLayer + 1);
+           queue.push(v);
+        }
+      }
+    }
+
+    // 4. Handle Disconnected/Cyclic Nodes
+    // If nodes were not reached (due to cycles), force assign them to a later layer
+    const maxLayer = Math.max(0, ...Array.from(layers.values()));
+    validNodes.forEach((n: any) => {
+       if (!layers.has(n.id)) {
+          // Fallback: Just put them at the end so they don't stack at 0
+          layers.set(n.id, maxLayer + 1);
+       }
+    });
+
+    // 5. Final Coordinate Assignment
+    // Group nodes by layer
+    const layerGroups: Record<number, any[]> = {};
+    layers.forEach((layer, id) => {
+       if (!layerGroups[layer]) layerGroups[layer] = [];
+       layerGroups[layer].push(nodeMap.get(id));
+    });
 
     const placedNodes: PathNode[] = [];
+    const LEVEL_WIDTH = 300; // X spacing
+    const NODE_HEIGHT = 160; // Y spacing
     
-    // Sort nodes in each level to minimize crossing (simple heuristic based on parent Y could go here, but index is okay for now)
-    
-    nodes.forEach((node: any) => {
-      const level = levels[node.id] || 0;
-      const nodesInThisLevel = nodesByLevel[level];
-      const indexInLevel = nodesInThisLevel.findIndex((n: any) => n.id === node.id);
-      
-      // Calculate start Y to center the column
-      const totalLevelHeight = (nodesInThisLevel.length - 1) * NODE_HEIGHT;
-      const startY = CANVAS_CENTER_Y - (totalLevelHeight / 2);
-      
-      const x = 100 + (level * LEVEL_WIDTH);
-      const y = startY + (indexInLevel * NODE_HEIGHT);
-
-      placedNodes.push({
-        id: node.id,
-        label: node.label,
-        description: node.description,
-        prerequisites: node.prerequisites,
-        status: node.prerequisites.length === 0 ? 'unlocked' : 'locked',
-        x,
-        y
-      });
+    Object.entries(layerGroups).forEach(([layerStr, groupNodes]) => {
+       const layer = parseInt(layerStr);
+       const count = groupNodes.length;
+       // Center vertically around Y=400
+       const startY = 400 - ((count - 1) * NODE_HEIGHT) / 2;
+       
+       groupNodes.forEach((node, idx) => {
+          placedNodes.push({
+             id: node.id,
+             label: node.label,
+             description: node.description,
+             prerequisites: validNodes.find((vn: any) => vn.id === node.id).prerequisites,
+             status: layer === 0 ? 'unlocked' : 'locked',
+             x: 100 + (layer * LEVEL_WIDTH),
+             y: startY + (idx * NODE_HEIGHT)
+          });
+       });
     });
 
     return {
